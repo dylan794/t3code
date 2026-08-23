@@ -57,6 +57,48 @@ const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 
+it.effect("decodes structured user-input cancellations", () =>
+  Effect.gen(function* () {
+    const command = yield* decodeOrchestrationCommand({
+      type: "thread.user-input.respond",
+      commandId: "cmd-user-input-cancel",
+      threadId: "thread-1",
+      requestId: "request-1",
+      answers: {},
+      cancelled: true,
+      createdAt: "2026-08-23T00:00:00.000Z",
+    });
+    const event = yield* decodeOrchestrationEvent({
+      sequence: 1,
+      eventId: "event-user-input-cancel",
+      type: "thread.user-input-response-requested",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: "2026-08-23T00:00:00.000Z",
+      commandId: "cmd-user-input-cancel",
+      causationEventId: null,
+      correlationId: "cmd-user-input-cancel",
+      metadata: {},
+      payload: {
+        threadId: "thread-1",
+        requestId: "request-1",
+        answers: {},
+        cancelled: true,
+        createdAt: "2026-08-23T00:00:00.000Z",
+      },
+    });
+
+    assert.strictEqual(command.type, "thread.user-input.respond");
+    if (command.type === "thread.user-input.respond") {
+      assert.strictEqual(command.cancelled, true);
+    }
+    assert.strictEqual(event.type, "thread.user-input-response-requested");
+    if (event.type === "thread.user-input-response-requested") {
+      assert.strictEqual(event.payload.cancelled, true);
+    }
+  }),
+);
+
 it.effect("decodes a dispatch error after its bootstrap thread was deleted", () =>
   Effect.gen(function* () {
     const error = yield* decodeDispatchCommandError({

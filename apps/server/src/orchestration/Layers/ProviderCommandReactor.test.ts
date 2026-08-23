@@ -2654,7 +2654,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("reacts to thread.user-input.respond by forwarding structured user input answers", async () => {
+  it("reacts to thread.user-input.respond by forwarding structured user input cancellations", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -2685,6 +2685,7 @@ describe("ProviderCommandReactor", () => {
         answers: {
           sandbox_mode: "workspace-write",
         },
+        cancelled: true,
         createdAt: now,
       }),
     );
@@ -2696,6 +2697,7 @@ describe("ProviderCommandReactor", () => {
       answers: {
         sandbox_mode: "workspace-write",
       },
+      cancelled: true,
     });
   });
 

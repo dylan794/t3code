@@ -130,6 +130,31 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("preserves requests that cannot be approved for the full session", () => {
+    const activities = [
+      makeActivity({
+        kind: "approval.requested",
+        tone: "approval",
+        payload: {
+          requestId: "pi-confirm-1",
+          requestType: "command_execution_approval",
+          detail: "Clear session?\nAll messages will be lost.",
+          supportsAcceptForSession: false,
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "pi-confirm-1",
+        requestKind: "command",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        detail: "Clear session?\nAll messages will be lost.",
+        supportsAcceptForSession: false,
+      },
+    ]);
+  });
+
   it("derives dynamic tool requests as actionable generic approvals", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -298,6 +323,44 @@ describe("derivePendingUserInputs", () => {
               },
             ],
             multiSelect: true,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps free-text and multiline questions without preset options", () => {
+    const activities = [
+      makeActivity({
+        kind: "user-input.requested",
+        payload: {
+          requestId: "pi-editor-1",
+          questions: [
+            {
+              id: "value",
+              header: "Editor",
+              question: "Edit the release note",
+              options: [],
+              placeholder: "Describe the change",
+              defaultValue: "First line\nSecond line",
+              inputKind: "multiline",
+              multiSelect: false,
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toMatchObject([
+      {
+        requestId: "pi-editor-1",
+        questions: [
+          {
+            id: "value",
+            options: [],
+            placeholder: "Describe the change",
+            defaultValue: "First line\nSecond line",
+            inputKind: "multiline",
           },
         ],
       },

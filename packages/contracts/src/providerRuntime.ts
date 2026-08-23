@@ -431,6 +431,7 @@ const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
+  supportsAcceptForSession: Schema.optional(Schema.Boolean),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
@@ -444,6 +445,7 @@ export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 const UserInputQuestionOption = Schema.Struct({
   label: TrimmedNonEmptyStringSchema,
   description: TrimmedNonEmptyStringSchema,
+  value: Schema.optional(Schema.String),
 });
 export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
 
@@ -452,6 +454,10 @@ export const UserInputQuestion = Schema.Struct({
   header: TrimmedNonEmptyStringSchema,
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
+  placeholder: Schema.optional(Schema.String),
+  defaultValue: Schema.optional(Schema.String),
+  inputKind: Schema.optional(Schema.Literals(["text", "multiline"])),
+  allowEmpty: Schema.optional(Schema.Boolean),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
@@ -460,11 +466,13 @@ export type UserInputQuestion = typeof UserInputQuestion.Type;
 
 const UserInputRequestedPayload = Schema.Struct({
   questions: Schema.Array(UserInputQuestion),
+  supportsCancellation: Schema.optional(Schema.Boolean),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
   answers: UnknownRecordSchema,
+  cancelled: Schema.optional(Schema.Boolean),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 

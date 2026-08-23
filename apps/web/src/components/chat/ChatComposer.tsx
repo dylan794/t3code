@@ -249,7 +249,7 @@ import {
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
-import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
+import type { PendingUserInputDraftAnswer, PendingUserInputProgress } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "@t3tools/client-runtime/providerSkills";
@@ -558,13 +558,7 @@ export interface ChatComposerProps {
   activePendingApproval: PendingApproval | null;
   pendingApprovals: PendingApproval[];
   pendingUserInputs: PendingUserInput[];
-  activePendingProgress: {
-    questionIndex: number;
-    isLastQuestion: boolean;
-    canAdvance: boolean;
-    customAnswer: string;
-    activeQuestion: { id: string; multiSelect?: boolean | undefined } | null;
-  } | null;
+  activePendingProgress: PendingUserInputProgress | null;
   activePendingResolvedAnswers: Record<string, unknown> | null;
   activePendingIsResponding: boolean;
   activePendingDraftAnswers: Record<string, PendingUserInputDraftAnswer>;
@@ -614,6 +608,7 @@ export interface ChatComposerProps {
   ) => Promise<unknown>;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
+  onCancelActivePendingUserInput: (requestId: ApprovalRequestId) => void;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
@@ -695,6 +690,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRespondToApproval,
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
+    onCancelActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -2864,6 +2860,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingApprovalActions
                   requestId={activePendingApproval.requestId}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                  {...(activePendingApproval.supportsAcceptForSession !== undefined
+                    ? {
+                        supportsAcceptForSession: activePendingApproval.supportsAcceptForSession,
+                      }
+                    : {})}
                   onRespondToApproval={onRespondToApproval}
                 />
               </div>
@@ -2876,6 +2877,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               questionIndex={activePendingQuestionIndex}
               onToggleOption={onSelectActivePendingUserInputOption}
               onAdvance={onAdvanceActivePendingUserInput}
+              onCancel={onCancelActivePendingUserInput}
             />
           ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
             <ComposerPlanFollowUpBanner
@@ -2893,6 +2895,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 <ComposerPendingApprovalActions
                   requestId={activePendingApproval.requestId}
                   isResponding={respondingRequestIds.includes(activePendingApproval.requestId)}
+                  {...(activePendingApproval.supportsAcceptForSession !== undefined
+                    ? {
+                        supportsAcceptForSession: activePendingApproval.supportsAcceptForSession,
+                      }
+                    : {})}
                   onRespondToApproval={onRespondToApproval}
                 />
               </div>
@@ -2906,6 +2913,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 questionIndex={activePendingQuestionIndex}
                 onToggleOption={onSelectActivePendingUserInputOption}
                 onAdvance={onAdvanceActivePendingUserInput}
+                onCancel={onCancelActivePendingUserInput}
               />
               <div className="px-3 pb-3 sm:px-4">
                 <div
@@ -3238,7 +3246,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       ? (activePendingApproval?.detail ??
                         "Resolve this approval request to continue")
                       : activePendingProgress
-                        ? "Type your own answer, or leave this blank to use the selected option"
+                        ? (activePendingProgress.activeQuestion?.placeholder ??
+                          "Type your own answer, or leave this blank to use the selected option")
                         : showPlanFollowUpPrompt && activeProposedPlan
                           ? "Add feedback to refine the plan, or leave this blank to implement it"
                           : projectSelectionRequired

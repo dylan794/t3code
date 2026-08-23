@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 interface ComposerPendingApprovalActionsProps {
   requestId: ApprovalRequestId;
   isResponding: boolean;
+  supportsAcceptForSession?: boolean;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
@@ -16,6 +17,7 @@ const APPROVAL_ACTION_CLASS_NAME = "font-normal";
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   requestId,
   isResponding,
+  supportsAcceptForSession = true,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   return (
@@ -38,15 +40,17 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
       >
         Decline
       </Button>
-      <Button
-        size="micro"
-        variant="ghost-muted"
-        className={APPROVAL_ACTION_CLASS_NAME}
-        disabled={isResponding}
-        onClick={() => void onRespondToApproval(requestId, "acceptForSession")}
-      >
-        Always allow this session
-      </Button>
+      {supportsAcceptForSession ? (
+        <Button
+          size="micro"
+          variant="ghost-muted"
+          className={APPROVAL_ACTION_CLASS_NAME}
+          disabled={isResponding}
+          onClick={() => void onRespondToApproval(requestId, "acceptForSession")}
+        >
+          Always allow this session
+        </Button>
+      ) : null}
       <Button
         size="micro"
         variant="ghost-muted"

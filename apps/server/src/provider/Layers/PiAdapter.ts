@@ -7,12 +7,14 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   RuntimeItemId,
+  RuntimeRequestId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -20,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -77,11 +80,20 @@ interface PiTurnSnapshot {
   readonly items: Array<unknown>;
 }
 
+type PiExtensionUIRequest = Extract<PiRpcEvent, { readonly type: "extension-ui.requested" }>;
+
+interface PiPendingInteraction {
+  readonly request: PiExtensionUIRequest;
+  readonly turnId?: TurnId;
+}
+
 interface PiSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly rpc: PiRpcConnection;
   readonly turns: Array<PiTurnSnapshot>;
+  readonly pendingInteractions: Map<string, PiPendingInteraction>;
+  readonly interactionMutex: Semaphore.Semaphore;
   activeTurnId: TurnId | undefined;
   assistantItemId: RuntimeItemId | undefined;
   assistantStopReason: string | undefined;
@@ -112,6 +124,20 @@ function selectedThinkingLevel(
     ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value)
     ? (value as PiThinkingLevel)
     : undefined;
+}
+
+function piSelectOption(rawValue: string, index: number) {
+  const label =
+    rawValue.length === 0
+      ? `(empty value ${index + 1})`
+      : rawValue.trim() === rawValue && rawValue.length > 0
+        ? rawValue
+        : JSON.stringify(rawValue);
+  return {
+    label,
+    description: label === rawValue ? rawValue : `Exact value: ${JSON.stringify(rawValue)}`,
+    value: rawValue,
+  };
 }
 
 export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
@@ -163,6 +189,202 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     threadId: context.session.threadId,
   });
 
+  const interactionRequestId = (requestId: string) => RuntimeRequestId.make(requestId);
+
+  const publishInteractionResolved = Effect.fn("PiAdapter.publishInteractionResolved")(function* (
+    context: PiSessionContext,
+    pending: PiPendingInteraction,
+    resolution:
+      | { readonly kind: "approval"; readonly decision: string }
+      | {
+          readonly kind: "user-input";
+          readonly answers: Record<string, unknown>;
+          readonly cancelled?: boolean;
+        },
+  ) {
+    if (resolution.kind === "approval") {
+      yield* publish({
+        type: "request.resolved",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        requestId: interactionRequestId(pending.request.requestId),
+        payload: {
+          requestType: "command_execution_approval",
+          decision: resolution.decision,
+        },
+      });
+      return;
+    }
+
+    yield* publish({
+      type: "user-input.resolved",
+      ...(yield* makeStamp()),
+      ...eventBase(context),
+      ...(pending.turnId ? { turnId: pending.turnId } : {}),
+      requestId: interactionRequestId(pending.request.requestId),
+      payload: {
+        answers: resolution.answers,
+        ...(resolution.cancelled !== undefined ? { cancelled: resolution.cancelled } : {}),
+      },
+    });
+  });
+
+  const resolvePendingLocally = Effect.fn("PiAdapter.resolvePendingLocally")(function* (
+    context: PiSessionContext,
+    requestId: string,
+    reason: "cancel" | "timeout",
+  ) {
+    yield* context.interactionMutex.withPermits(1)(
+      Effect.gen(function* () {
+        const pending = context.pendingInteractions.get(requestId);
+        if (!pending) return;
+        context.pendingInteractions.delete(requestId);
+        yield* publishInteractionResolved(
+          context,
+          pending,
+          pending.request.method === "confirm"
+            ? { kind: "approval", decision: reason === "timeout" ? "decline" : "cancel" }
+            : { kind: "user-input", answers: {}, cancelled: true },
+        );
+      }),
+    );
+  });
+
+  const clearPendingInteractions = Effect.fn("PiAdapter.clearPendingInteractions")(function* (
+    context: PiSessionContext,
+    reason: "interrupt" | "settled" | "stop" | "exit",
+  ) {
+    yield* context.interactionMutex.withPermits(1)(
+      Effect.gen(function* () {
+        const pendingInteractions = [...context.pendingInteractions.values()];
+        context.pendingInteractions.clear();
+        for (const pending of pendingInteractions) {
+          if (reason === "interrupt" || reason === "stop") {
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: pending.request.requestId,
+                cancelled: true,
+              })
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Failed to cancel Pi extension UI request", {
+                    requestId: pending.request.requestId,
+                    detail: cause.detail,
+                  }),
+                ),
+              );
+          }
+          yield* publishInteractionResolved(
+            context,
+            pending,
+            pending.request.method === "confirm"
+              ? {
+                  kind: "approval",
+                  decision:
+                    reason === "settled" &&
+                    "timeout" in pending.request &&
+                    pending.request.timeout !== undefined &&
+                    pending.request.timeout > 0
+                      ? "decline"
+                      : "cancel",
+                }
+              : { kind: "user-input", answers: {}, cancelled: true },
+          );
+        }
+      }),
+    );
+  });
+
+  const publishInteractionOpened = Effect.fn("PiAdapter.publishInteractionOpened")(function* (
+    context: PiSessionContext,
+    request: PiExtensionUIRequest,
+  ) {
+    const pending: PiPendingInteraction = {
+      request,
+      ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+    };
+    const duplicate = context.pendingInteractions.has(request.requestId);
+    if (duplicate) {
+      yield* publish({
+        type: "runtime.error",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+        payload: {
+          message: `Pi reused pending extension UI request id '${request.requestId}'.`,
+          class: "validation_error",
+        },
+      });
+      return;
+    }
+    context.pendingInteractions.set(request.requestId, pending);
+
+    if (request.method === "confirm") {
+      const detail = [request.title, request.message]
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0)
+        .join("\n");
+      yield* publish({
+        type: "request.opened",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        requestId: interactionRequestId(request.requestId),
+        payload: {
+          requestType: "command_execution_approval",
+          supportsAcceptForSession: false,
+          ...(detail ? { detail } : {}),
+          args: { method: request.method, title: request.title, message: request.message },
+        },
+      });
+    } else {
+      const header =
+        request.method === "select"
+          ? "Selection"
+          : request.method === "editor"
+            ? "Editor"
+            : "Input";
+      const title = request.title.trim() || `Pi ${header.toLowerCase()} request`;
+      const options = request.method === "select" ? request.options.map(piSelectOption) : [];
+      yield* publish({
+        type: "user-input.requested",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        requestId: interactionRequestId(request.requestId),
+        payload: {
+          questions: [
+            {
+              id: "value",
+              header,
+              question: title,
+              options,
+              ...(request.method === "input" && request.placeholder !== undefined
+                ? { placeholder: request.placeholder }
+                : {}),
+              ...(request.method === "editor" && request.prefill !== undefined
+                ? { defaultValue: request.prefill }
+                : {}),
+              inputKind: request.method === "editor" ? "multiline" : "text",
+              allowEmpty: request.method === "input" || request.method === "editor",
+              multiSelect: false,
+            },
+          ],
+          supportsCancellation: true,
+        },
+      });
+    }
+
+    if ("timeout" in request && request.timeout !== undefined && request.timeout > 0) {
+      yield* Effect.sleep(Duration.millis(Math.max(0, request.timeout))).pipe(
+        Effect.andThen(resolvePendingLocally(context, request.requestId, "timeout")),
+        Effect.forkIn(context.scope),
+      );
+    }
+  });
+
   const handlePiEvent = (context: PiSessionContext, event: PiRpcEvent) =>
     Effect.gen(function* () {
       const turnId = context.activeTurnId;
@@ -183,6 +405,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         case "run.ended":
           return;
         case "run.settled": {
+          yield* clearPendingInteractions(context, "settled");
           if (turnId && !context.interrupted) {
             const failed = context.assistantStopReason === "error";
             yield* publish({
@@ -299,6 +522,34 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           } as ProviderRuntimeEvent);
           return;
         }
+        case "extension-ui.requested":
+          yield* publishInteractionOpened(context, event);
+          return;
+        case "extension-ui.invalid":
+          if (event.requestId !== undefined) {
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: event.requestId,
+                cancelled: true,
+              })
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Failed to cancel invalid Pi extension UI request", {
+                    requestId: event.requestId,
+                    detail: cause.detail,
+                  }),
+                ),
+              );
+          }
+          yield* publish({
+            type: "runtime.error",
+            ...(yield* makeStamp()),
+            ...eventBase(context),
+            ...(turnId ? { turnId } : {}),
+            payload: { message: event.message, class: "validation_error" },
+          });
+          return;
         case "runtime.error":
           yield* publish({
             type: "runtime.error",
@@ -309,6 +560,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           });
           return;
         case "runtime.exited":
+          yield* clearPendingInteractions(context, "exit");
           context.session = {
             ...context.session,
             status: "error",
@@ -335,6 +587,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     Effect.gen(function* () {
       if (context.stopped) return;
       context.stopped = true;
+      yield* clearPendingInteractions(context, "stop");
       yield* Scope.close(context.scope, Exit.void).pipe(Effect.ignore);
       sessions.delete(context.session.threadId);
       yield* publish({
@@ -503,6 +756,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         scope: sessionScope,
         rpc,
         turns: [],
+        pendingInteractions: new Map(),
+        interactionMutex: yield* Semaphore.make(1),
         activeTurnId: undefined,
         assistantItemId: undefined,
         assistantStopReason: undefined,
@@ -627,6 +882,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const context = yield* requireSession(threadId);
       const turnId = context.activeTurnId;
       context.interrupted = true;
+      yield* clearPendingInteractions(context, "interrupt");
       yield* context.rpc.abort().pipe(
         Effect.mapError(
           (cause) =>
@@ -660,10 +916,113 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     Effect.map(requireSession(threadId), (context) => ({ threadId, turns: context.turns }));
   const rollbackThread: PiAdapterShape["rollbackThread"] = () =>
     Effect.fail(unsupported("rollbackThread"));
-  const respondToRequest: PiAdapterShape["respondToRequest"] = () =>
-    Effect.fail(unsupported("respondToRequest"));
-  const respondToUserInput: PiAdapterShape["respondToUserInput"] = () =>
-    Effect.fail(unsupported("respondToUserInput"));
+  const respondToRequest: PiAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
+    Effect.gen(function* () {
+      const context = yield* requireSession(threadId);
+      yield* context.interactionMutex.withPermits(1)(
+        Effect.gen(function* () {
+          const pending = context.pendingInteractions.get(requestId);
+          if (!pending || pending.request.method !== "confirm") {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: `Unknown pending approval request: ${requestId}`,
+            });
+          }
+          if (decision === "acceptForSession") {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: "Pi confirmation requests do not support session-persistent approval.",
+            });
+          }
+          const response =
+            decision === "cancel"
+              ? ({
+                  type: "extension_ui_response",
+                  id: pending.request.requestId,
+                  cancelled: true,
+                } as const)
+              : ({
+                  type: "extension_ui_response",
+                  id: pending.request.requestId,
+                  confirmed: decision === "accept",
+                } as const);
+          yield* context.rpc
+            .respondToExtensionUI(response)
+            .pipe(Effect.mapError(mapRpcError("extension_ui_response")));
+          context.pendingInteractions.delete(requestId);
+          yield* publishInteractionResolved(context, pending, {
+            kind: "approval",
+            decision,
+          });
+        }),
+      );
+    });
+  const respondToUserInput: PiAdapterShape["respondToUserInput"] = (
+    threadId,
+    requestId,
+    answers,
+    cancelled,
+  ) =>
+    Effect.gen(function* () {
+      const context = yield* requireSession(threadId);
+      yield* context.interactionMutex.withPermits(1)(
+        Effect.gen(function* () {
+          const pending = context.pendingInteractions.get(requestId);
+          if (!pending || pending.request.method === "confirm") {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: `Unknown pending user-input request: ${requestId}`,
+            });
+          }
+          if (cancelled === true) {
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: pending.request.requestId,
+                cancelled: true,
+              })
+              .pipe(Effect.mapError(mapRpcError("extension_ui_response")));
+            context.pendingInteractions.delete(requestId);
+            yield* publishInteractionResolved(context, pending, {
+              kind: "user-input",
+              answers: {},
+              cancelled: true,
+            });
+            return;
+          }
+          const value = answers.value;
+          if (typeof value !== "string") {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: "Pi user-input response requires a string answer named 'value'.",
+            });
+          }
+          if (pending.request.method === "select" && !pending.request.options.includes(value)) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: `Pi selection response must match one of the offered options: ${pending.request.options.join(", ")}`,
+            });
+          }
+          yield* context.rpc
+            .respondToExtensionUI({
+              type: "extension_ui_response",
+              id: pending.request.requestId,
+              value,
+            })
+            .pipe(Effect.mapError(mapRpcError("extension_ui_response")));
+          context.pendingInteractions.delete(requestId);
+          yield* publishInteractionResolved(context, pending, {
+            kind: "user-input",
+            answers,
+          });
+        }),
+      );
+    });
   const stopSession: PiAdapterShape["stopSession"] = (threadId) => {
     const context = sessions.get(threadId);
     return context

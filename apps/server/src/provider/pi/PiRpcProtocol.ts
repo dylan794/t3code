@@ -14,11 +14,17 @@ const PiAssistantMessageEvent = Schema.Struct({
 const PiWireMessage = Schema.Struct({
   type: Schema.String,
   id: Schema.optional(Schema.String),
+  method: Schema.optional(Schema.Unknown),
   command: Schema.optional(Schema.String),
   success: Schema.optional(Schema.Boolean),
   data: Schema.optional(Schema.Unknown),
   error: Schema.optional(Schema.Unknown),
   message: Schema.optional(Schema.Unknown),
+  title: Schema.optional(Schema.Unknown),
+  options: Schema.optional(Schema.Unknown),
+  timeout: Schema.optional(Schema.Unknown),
+  placeholder: Schema.optional(Schema.Unknown),
+  prefill: Schema.optional(Schema.Unknown),
   messages: Schema.optional(Schema.Array(Schema.Unknown)),
   willRetry: Schema.optional(Schema.Boolean),
   usage: Schema.optional(Schema.Unknown),
@@ -50,9 +56,44 @@ const PiToolResult = Schema.Struct({
   ),
 });
 
+const PiExtensionUIDialogRequest = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("select"),
+    title: Schema.String,
+    options: Schema.Array(Schema.String),
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("confirm"),
+    title: Schema.String,
+    message: Schema.String,
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("input"),
+    title: Schema.String,
+    placeholder: Schema.optional(Schema.String),
+    timeout: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_request"),
+    id: Schema.String,
+    method: Schema.Literal("editor"),
+    title: Schema.String,
+    prefill: Schema.optional(Schema.String),
+  }),
+]);
+
 const decodeWireLine = Schema.decodeUnknownEffect(Schema.fromJsonString(PiWireMessage));
 const decodeMessageExit = Schema.decodeUnknownExit(PiMessage);
 const decodeToolResultExit = Schema.decodeUnknownExit(PiToolResult);
+const decodeExtensionUIDialogRequestExit = Schema.decodeUnknownExit(PiExtensionUIDialogRequest);
 
 export class PiRpcDecodeError extends Schema.TaggedErrorClass<PiRpcDecodeError>()(
   "PiRpcDecodeError",
@@ -107,6 +148,42 @@ export type PiRpcEvent =
       readonly failed: boolean;
       readonly detail?: string;
       readonly data?: unknown;
+    }
+  | {
+      readonly type: "extension-ui.requested";
+      readonly requestId: string;
+      readonly method: "select";
+      readonly title: string;
+      readonly options: ReadonlyArray<string>;
+      readonly timeout?: number;
+    }
+  | {
+      readonly type: "extension-ui.requested";
+      readonly requestId: string;
+      readonly method: "confirm";
+      readonly title: string;
+      readonly message: string;
+      readonly timeout?: number;
+    }
+  | {
+      readonly type: "extension-ui.requested";
+      readonly requestId: string;
+      readonly method: "input";
+      readonly title: string;
+      readonly placeholder?: string;
+      readonly timeout?: number;
+    }
+  | {
+      readonly type: "extension-ui.requested";
+      readonly requestId: string;
+      readonly method: "editor";
+      readonly title: string;
+      readonly prefill?: string;
+    }
+  | {
+      readonly type: "extension-ui.invalid";
+      readonly requestId?: string;
+      readonly message: string;
     }
   | { readonly type: "runtime.error"; readonly message: string }
   | { readonly type: "runtime.exited"; readonly message: string };
@@ -173,6 +250,8 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
       return normalizeToolUpdate(message);
     case "tool_execution_end":
       return normalizeToolEnd(message);
+    case "extension_ui_request":
+      return normalizeExtensionUIDialogRequest(message);
     case "extension_error": {
       const error = typeof message.error === "string" ? message.error.trim() : "";
       return [
@@ -184,6 +263,73 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
     }
     default:
       return [];
+  }
+}
+
+function normalizeExtensionUIDialogRequest(message: PiWireMessage): ReadonlyArray<PiRpcEvent> {
+  if (
+    message.method !== "select" &&
+    message.method !== "confirm" &&
+    message.method !== "input" &&
+    message.method !== "editor"
+  ) {
+    return [];
+  }
+  const decoded = decodeExtensionUIDialogRequestExit(message);
+  if (Exit.isFailure(decoded)) {
+    return [
+      {
+        type: "extension-ui.invalid",
+        ...(message.id !== undefined ? { requestId: message.id } : {}),
+        message: "Pi emitted an invalid extension UI dialog request.",
+      },
+    ];
+  }
+  const request = decoded.value;
+  switch (request.method) {
+    case "select":
+      return [
+        {
+          type: "extension-ui.requested",
+          requestId: request.id,
+          method: request.method,
+          title: request.title,
+          options: request.options,
+          ...(request.timeout !== undefined ? { timeout: request.timeout } : {}),
+        },
+      ];
+    case "confirm":
+      return [
+        {
+          type: "extension-ui.requested",
+          requestId: request.id,
+          method: request.method,
+          title: request.title,
+          message: request.message,
+          ...(request.timeout !== undefined ? { timeout: request.timeout } : {}),
+        },
+      ];
+    case "input":
+      return [
+        {
+          type: "extension-ui.requested",
+          requestId: request.id,
+          method: request.method,
+          title: request.title,
+          ...(request.placeholder !== undefined ? { placeholder: request.placeholder } : {}),
+          ...(request.timeout !== undefined ? { timeout: request.timeout } : {}),
+        },
+      ];
+    case "editor":
+      return [
+        {
+          type: "extension-ui.requested",
+          requestId: request.id,
+          method: request.method,
+          title: request.title,
+          ...(request.prefill !== undefined ? { prefill: request.prefill } : {}),
+        },
+      ];
   }
 }
 

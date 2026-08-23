@@ -22,6 +22,7 @@ describe("runtimeEventToActivities approval details", () => {
       payload: {
         requestType: "command_execution_approval",
         detail,
+        supportsAcceptForSession: false,
       },
     } satisfies ProviderRuntimeEvent;
 
@@ -29,5 +30,8 @@ describe("runtimeEventToActivities approval details", () => {
 
     expect(activity?.kind).toBe("approval.requested");
     expect((activity?.payload as Record<string, unknown> | undefined)?.detail).toBe(detail);
+    expect(
+      (activity?.payload as Record<string, unknown> | undefined)?.supportsAcceptForSession,
+    ).toBe(false);
   });
 });

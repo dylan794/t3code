@@ -886,6 +886,7 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  cancelled: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 
@@ -1275,6 +1276,7 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  cancelled: Schema.optional(Schema.Boolean),
   createdAt: IsoDateTime,
 });
 

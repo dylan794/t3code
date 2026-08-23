@@ -924,7 +924,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
-      yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers);
+      if (input.cancelled === undefined) {
+        yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers);
+      } else {
+        yield* routed.adapter.respondToUserInput(
+          routed.threadId,
+          input.requestId,
+          input.answers,
+          input.cancelled,
+        );
+      }
     }).pipe(
       withMetrics({
         counter: providerTurnsTotal,

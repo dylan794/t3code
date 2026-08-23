@@ -5794,7 +5794,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+    async (requestId: ApprovalRequestId, answers: Record<string, unknown>, cancelled?: boolean) => {
       if (!activeThreadId) return;
 
       setRespondingUserInputRequestIds((existing) =>
@@ -5806,6 +5806,7 @@ function ChatViewContent(props: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           answers,
+          ...(cancelled !== undefined ? { cancelled } : {}),
         },
       });
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -5819,6 +5820,13 @@ function ChatViewContent(props: ChatViewProps) {
       return result;
     },
     [activeThreadId, environmentId, respondToThreadUserInput, setThreadError],
+  );
+
+  const onCancelActivePendingUserInput = useCallback(
+    (requestId: ApprovalRequestId) => {
+      void onRespondToUserInput(requestId, {}, true);
+    },
+    [onRespondToUserInput],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -6836,6 +6844,7 @@ function ChatViewContent(props: ChatViewProps) {
                               onSelectActivePendingUserInputOption
                             }
                             onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
+                            onCancelActivePendingUserInput={onCancelActivePendingUserInput}
                             onPreviousActivePendingUserInputQuestion={
                               onPreviousActivePendingUserInputQuestion
                             }

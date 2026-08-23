@@ -21,4 +21,19 @@ describe("ComposerPendingApprovalActions", () => {
     expect(markup).toContain("sm:text-[11px]");
     expect(markup).not.toContain("sm:h-6");
   });
+
+  it("hides session approval when the provider cannot persist it", () => {
+    const markup = renderToStaticMarkup(
+      <ComposerPendingApprovalActions
+        requestId={ApprovalRequestId.make("pi-confirm-1")}
+        isResponding={false}
+        supportsAcceptForSession={false}
+        onRespondToApproval={async () => undefined}
+      />,
+    );
+
+    expect(markup).toContain(">Approve<");
+    expect(markup).toContain(">Decline<");
+    expect(markup).not.toContain("Always allow this session");
+  });
 });

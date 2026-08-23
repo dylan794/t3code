@@ -37,15 +37,17 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         >
           <Text className="font-t3-extrabold text-sm text-white">Allow once</Text>
         </Pressable>
-        <Pressable
-          className="items-center justify-center rounded-[14px] bg-neutral-200 px-3.5 py-3 dark:bg-neutral-800"
-          disabled={props.respondingApprovalId === props.approval.requestId}
-          onPress={() => void props.onRespond(props.approval.requestId, "acceptForSession")}
-        >
-          <Text className="font-t3-bold text-sm text-neutral-950 dark:text-neutral-50">
-            Allow session
-          </Text>
-        </Pressable>
+        {props.approval.supportsAcceptForSession !== false ? (
+          <Pressable
+            className="items-center justify-center rounded-[14px] bg-neutral-200 px-3.5 py-3 dark:bg-neutral-800"
+            disabled={props.respondingApprovalId === props.approval.requestId}
+            onPress={() => void props.onRespond(props.approval.requestId, "acceptForSession")}
+          >
+            <Text className="font-t3-bold text-sm text-neutral-950 dark:text-neutral-50">
+              Allow session
+            </Text>
+          </Pressable>
+        ) : null}
         <Pressable
           className="items-center justify-center rounded-[14px] bg-rose-100 px-3.5 py-3 dark:bg-rose-500/18"
           disabled={props.respondingApprovalId === props.approval.requestId}

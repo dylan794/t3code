@@ -17,12 +17,14 @@ export interface PendingApproval {
   readonly requestKind: "command" | "file-read" | "file-change";
   readonly createdAt: string;
   readonly detail?: string;
+  readonly supportsAcceptForSession?: boolean;
 }
 
 export interface PendingUserInput {
   readonly requestId: ApprovalRequestId;
   readonly createdAt: string;
   readonly questions: ReadonlyArray<UserInputQuestion>;
+  readonly supportsCancellation?: boolean;
 }
 
 export interface PendingUserInputDraftAnswer {
@@ -200,17 +202,23 @@ function parseUserInputQuestions(
           return {
             label: record.label,
             description: record.description,
+            ...(typeof record.value === "string" ? { value: record.value } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
         question: question.question,
         options,
+        ...(typeof question.placeholder === "string" ? { placeholder: question.placeholder } : {}),
+        ...(typeof question.defaultValue === "string"
+          ? { defaultValue: question.defaultValue }
+          : {}),
+        ...(question.inputKind === "text" || question.inputKind === "multiline"
+          ? { inputKind: question.inputKind }
+          : {}),
+        ...(typeof question.allowEmpty === "boolean" ? { allowEmpty: question.allowEmpty } : {}),
         multiSelect: question.multiSelect === true,
       };
     })
@@ -219,12 +227,11 @@ function parseUserInputQuestions(
   return parsed.length > 0 ? parsed : null;
 }
 
-function normalizeDraftAnswer(value: string | undefined): string | null {
+function normalizeDraftAnswer(value: string | undefined, allowEmpty = false): string | null {
   if (typeof value !== "string") {
     return null;
   }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return allowEmpty || value.trim().length > 0 ? value : null;
 }
 
 function normalizeSelectedOptionLabels(
@@ -234,17 +241,21 @@ function normalizeSelectedOptionLabels(
     return [];
   }
 
-  return Array.from(
-    new Set(value.map((entry) => entry.trim()).filter((entry) => entry.length > 0)),
-  );
+  return Array.from(new Set(value));
 }
 
 function resolvePendingUserInputAnswer(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
 ): string | ReadonlyArray<string> | null {
-  const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
+  const customAnswer = normalizeDraftAnswer(
+    draft?.customAnswer !== undefined
+      ? draft.customAnswer
+      : (question.defaultValue ??
+          (question.allowEmpty === true && question.options.length === 0 ? "" : undefined)),
+    question.allowEmpty === true,
+  );
+  if (customAnswer !== null) {
     return customAnswer;
   }
 
@@ -1382,12 +1393,17 @@ export function derivePendingApprovals(
         ? payload.requestKind
         : requestKindFromRequestType(payload?.requestType);
     const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+    const supportsAcceptForSession =
+      typeof payload?.supportsAcceptForSession === "boolean"
+        ? payload.supportsAcceptForSession
+        : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
       openByRequestId.set(requestId, {
         requestId,
         requestKind,
         createdAt: activity.createdAt,
+        ...(supportsAcceptForSession !== undefined ? { supportsAcceptForSession } : {}),
         ...(detail ? { detail } : {}),
       });
       continue;
@@ -1432,6 +1448,9 @@ export function derivePendingUserInputs(
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(typeof payload?.supportsCancellation === "boolean"
+          ? { supportsCancellation: payload.supportsCancellation }
+          : {}),
       });
       continue;
     }
@@ -1475,7 +1494,7 @@ export function isPendingUserInputOptionSelected(
     return false;
   }
 
-  return normalizeSelectedOptionLabels(draft?.selectedOptionLabels).includes(optionLabel.trim());
+  return normalizeSelectedOptionLabels(draft?.selectedOptionLabels).includes(optionLabel);
 }
 
 export function togglePendingUserInputOptionSelection(
@@ -1483,13 +1502,11 @@ export function togglePendingUserInputOptionSelection(
   draft: PendingUserInputDraftAnswer | undefined,
   optionLabel: string,
 ): PendingUserInputDraftAnswer {
-  const normalizedOptionLabel = optionLabel.trim();
-
   if (question.multiSelect) {
     const selectedOptionLabels = normalizeSelectedOptionLabels(draft?.selectedOptionLabels);
-    const nextSelectedOptionLabels = selectedOptionLabels.includes(normalizedOptionLabel)
-      ? selectedOptionLabels.filter((label) => label !== normalizedOptionLabel)
-      : [...selectedOptionLabels, normalizedOptionLabel];
+    const nextSelectedOptionLabels = selectedOptionLabels.includes(optionLabel)
+      ? selectedOptionLabels.filter((label) => label !== optionLabel)
+      : [...selectedOptionLabels, optionLabel];
 
     return {
       customAnswer: "",
@@ -1501,7 +1518,7 @@ export function togglePendingUserInputOptionSelection(
 
   return {
     customAnswer: "",
-    selectedOptionLabels: [normalizedOptionLabel],
+    selectedOptionLabels: [optionLabel],
   };
 }
 
@@ -1513,7 +1530,7 @@ export function buildPendingUserInputAnswers(
 
   for (const question of questions) {
     const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (!answer) {
+    if (answer === null) {
       return null;
     }
     answers[question.id] = answer;

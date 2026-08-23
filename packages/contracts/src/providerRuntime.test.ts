@@ -107,6 +107,57 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.payload.questions[0]?.options).toHaveLength(2);
   });
 
+  it("decodes free-text questions and per-request approval decisions", () => {
+    const input = decodeRuntimeEvent({
+      type: "user-input.requested",
+      eventId: "event-pi-input",
+      provider: "pi",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      threadId: "thread-pi",
+      requestId: "pi-input-1",
+      payload: {
+        supportsCancellation: true,
+        questions: [
+          {
+            id: "value",
+            header: "Editor",
+            question: "Edit the text",
+            options: [],
+            placeholder: "Type text",
+            defaultValue: "Line one\nLine two",
+            inputKind: "multiline",
+            allowEmpty: true,
+          },
+        ],
+      },
+    });
+    const approval = decodeRuntimeEvent({
+      type: "request.opened",
+      eventId: "event-pi-confirm",
+      provider: "pi",
+      createdAt: "2026-08-23T00:00:01.000Z",
+      threadId: "thread-pi",
+      requestId: "pi-confirm-1",
+      payload: {
+        requestType: "command_execution_approval",
+        supportsAcceptForSession: false,
+      },
+    });
+
+    expect(input.type).toBe("user-input.requested");
+    if (input.type !== "user-input.requested") throw new Error("expected user input");
+    expect(input.payload.questions[0]).toMatchObject({
+      options: [],
+      defaultValue: "Line one\nLine two",
+      inputKind: "multiline",
+      allowEmpty: true,
+    });
+    expect(input.payload.supportsCancellation).toBe(true);
+    expect(approval.type).toBe("request.opened");
+    if (approval.type !== "request.opened") throw new Error("expected approval");
+    expect(approval.payload.supportsAcceptForSession).toBe(false);
+  });
+
   it("decodes user-input.resolved with answer map", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.resolved",

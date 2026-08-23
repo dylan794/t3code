@@ -5,6 +5,7 @@ import { ThreadId } from "./baseSchemas.ts";
 import {
   ProviderEvent,
   ProviderSendTurnInput,
+  ProviderRespondToUserInputInput,
   ProviderSession,
   ProviderSessionStartInput,
   ProviderUploadFeedbackError,
@@ -14,6 +15,9 @@ import {
 
 const decodeProviderSessionStartInput = Schema.decodeUnknownSync(ProviderSessionStartInput);
 const decodeProviderSendTurnInput = Schema.decodeUnknownSync(ProviderSendTurnInput);
+const decodeProviderRespondToUserInputInput = Schema.decodeUnknownSync(
+  ProviderRespondToUserInputInput,
+);
 const decodeProviderSession = Schema.decodeUnknownSync(ProviderSession);
 const decodeProviderEvent = Schema.decodeUnknownSync(ProviderEvent);
 const decodeProviderUploadFeedbackInput = Schema.decodeUnknownSync(ProviderUploadFeedbackInput);
@@ -25,6 +29,26 @@ function getOptionValue(
 ): unknown {
   return options?.find((option) => option.id === id)?.value;
 }
+
+describe("ProviderRespondToUserInputInput", () => {
+  it("accepts cancellations while keeping the answer map required", () => {
+    const parsed = decodeProviderRespondToUserInputInput({
+      threadId: "thread-1",
+      requestId: "request-1",
+      answers: {},
+      cancelled: true,
+    });
+
+    expect(parsed.cancelled).toBe(true);
+    expect(() =>
+      decodeProviderRespondToUserInputInput({
+        threadId: "thread-1",
+        requestId: "request-1",
+        cancelled: true,
+      }),
+    ).toThrow();
+  });
+});
 
 describe("ProviderSessionStartInput", () => {
   it("accepts codex-compatible payloads", () => {

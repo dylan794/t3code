@@ -42,6 +42,11 @@ export type PiRpcCommand =
   | { readonly type: "new_session"; readonly parentSession?: string }
   | { readonly type: "switch_session"; readonly sessionPath: string };
 
+export type PiExtensionUIResponse =
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly value: string }
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly confirmed: boolean }
+  | { readonly type: "extension_ui_response"; readonly id: string; readonly cancelled: true };
+
 export type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 const PiThinkingLevel = Schema.Literals([
@@ -94,7 +99,28 @@ const PiRpcWireCommand = Schema.Union([
   }),
 ]);
 
+const PiExtensionUIResponse = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    value: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    confirmed: Schema.Boolean,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
+    cancelled: Schema.Literal(true),
+  }),
+]);
+
 const encodePiRpcCommand = Schema.encodeEffect(Schema.fromJsonString(PiRpcWireCommand));
+const encodePiExtensionUIResponse = Schema.encodeEffect(
+  Schema.fromJsonString(PiExtensionUIResponse),
+);
 
 export interface PiRpcLaunchInput {
   readonly nodePath: string;
@@ -110,6 +136,9 @@ export interface PiRpcConnection {
   readonly pid: number;
   readonly events: Stream.Stream<PiRpcEvent>;
   readonly request: (command: PiRpcCommand) => Effect.Effect<PiRpcResponse, PiRpcTransportError>;
+  readonly respondToExtensionUI: (
+    response: PiExtensionUIResponse,
+  ) => Effect.Effect<void, PiRpcTransportError>;
   readonly prompt: (message: string) => Effect.Effect<void, PiRpcTransportError>;
   readonly abort: () => Effect.Effect<void, PiRpcTransportError>;
   readonly getState: () => Effect.Effect<unknown, PiRpcTransportError>;
@@ -374,10 +403,46 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
     return response;
   });
 
+  const respondToExtensionUI = Effect.fn("PiRpcConnection.respondToExtensionUI")(function* (
+    response: PiExtensionUIResponse,
+  ): Effect.fn.Return<void, PiRpcTransportError> {
+    if (!(yield* Ref.get(active))) {
+      return yield* new PiRpcTransportError({
+        operation: "write",
+        detail: "Pi RPC is no longer running.",
+      });
+    }
+
+    const encoded = yield* encodePiExtensionUIResponse(response).pipe(
+      Effect.mapError(
+        (cause) =>
+          new PiRpcTransportError({
+            operation: "write",
+            detail: "Failed to encode a Pi extension UI response.",
+            cause,
+          }),
+      ),
+    );
+    const payload = `${encoded}\n`;
+    yield* writeMutex.withPermits(1)(
+      Stream.run(Stream.encodeText(Stream.make(payload)), handle.stdin).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PiRpcTransportError({
+              operation: "write",
+              detail: "Failed to send a Pi extension UI response.",
+              cause,
+            }),
+        ),
+      ),
+    );
+  });
+
   return {
     pid: Number(handle.pid),
     events: Stream.fromQueue(events),
     request,
+    respondToExtensionUI,
     prompt: (message) => request({ type: "prompt", message }).pipe(Effect.asVoid),
     abort: () => request({ type: "abort" }).pipe(Effect.asVoid),
     getState: () => request({ type: "get_state" }).pipe(Effect.map((response) => response.data)),

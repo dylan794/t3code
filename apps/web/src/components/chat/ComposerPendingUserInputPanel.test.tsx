@@ -22,15 +22,16 @@ const prompt: PendingUserInput = {
   ],
 };
 
-function renderPanel() {
+function renderPanel(activePrompt: PendingUserInput = prompt) {
   return renderToStaticMarkup(
     <ComposerPendingUserInputPanel
-      pendingUserInputs={[prompt]}
+      pendingUserInputs={[activePrompt]}
       respondingRequestIds={[]}
       answers={{}}
       questionIndex={0}
       onToggleOption={() => {}}
       onAdvance={() => {}}
+      onCancel={() => {}}
     />,
   );
 }
@@ -57,5 +58,10 @@ describe("ComposerPendingUserInputPanel", () => {
     expect(markup).toContain("Which approach should the migration take?");
     expect(markup).toContain("Incremental");
     expect(markup).toContain("Big bang");
+  });
+
+  it("shows cancellation only when the provider supports it", () => {
+    expect(renderPanel()).not.toContain(">Cancel<");
+    expect(renderPanel({ ...prompt, supportsCancellation: true })).toContain(">Cancel<");
   });
 });

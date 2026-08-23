@@ -15,9 +15,11 @@ import {
 import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
+  derivePendingUserInputs,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
+  sortThreadActivities,
   togglePendingUserInputOptionSelection,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
@@ -102,7 +104,7 @@ describe("pending user input answers", () => {
       undefined,
       "  Orders  ",
     );
-    expect(paddedOrders).toEqual({ customAnswer: "", selectedOptionLabels: ["Orders"] });
+    expect(paddedOrders).toEqual({ customAnswer: "", selectedOptionLabels: ["  Orders  "] });
     expect(
       togglePendingUserInputOptionSelection(multiSelectQuestion, paddedOrders, "  Orders  "),
     ).toEqual({ customAnswer: "" });
@@ -120,6 +122,39 @@ describe("pending user input answers", () => {
     });
   });
 
+  it("keeps free-text questions and uses multiline defaults", () => {
+    const requested = makeActivity({
+      id: EventId.make("pi-editor-requested"),
+      kind: "user-input.requested",
+      summary: "User input requested",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      payload: {
+        requestId: "pi-editor-1",
+        questions: [
+          {
+            id: "value",
+            header: "Editor",
+            question: "Edit the text",
+            options: [],
+            defaultValue: "first line\nsecond line",
+            inputKind: "multiline",
+            multiSelect: false,
+          },
+        ],
+      },
+    });
+    const pending = derivePendingUserInputs(sortThreadActivities([requested]));
+
+    expect(pending[0]?.questions[0]).toMatchObject({
+      options: [],
+      defaultValue: "first line\nsecond line",
+      inputKind: "multiline",
+    });
+    expect(buildPendingUserInputAnswers(pending[0]?.questions ?? [], {})).toEqual({
+      value: "first line\nsecond line",
+    });
+  });
+
   it("clears selected options while a custom answer is active", () => {
     expect(
       setPendingUserInputCustomAnswer(
@@ -129,16 +164,33 @@ describe("pending user input answers", () => {
     ).toEqual({ customAnswer: "Orders first" });
   });
 
-  it("matches selected chips against normalized option labels", () => {
+  it("matches selected chips against exact option values", () => {
     expect(
-      isPendingUserInputOptionSelected({ selectedOptionLabels: ["Orders"] }, "  Orders  "),
+      isPendingUserInputOptionSelected({ selectedOptionLabels: ["  Orders  "] }, "  Orders  "),
     ).toBe(true);
     expect(
       isPendingUserInputOptionSelected(
-        { selectedOptionLabels: ["Orders"], customAnswer: "Orders first" },
+        { selectedOptionLabels: ["  Orders  "], customAnswer: "Orders first" },
         "  Orders  ",
       ),
     ).toBe(false);
+  });
+
+  it("submits legal empty and whitespace-only free-text answers", () => {
+    const question = {
+      id: "value",
+      header: "Editor",
+      question: "Edit the text",
+      options: [],
+      inputKind: "multiline" as const,
+      allowEmpty: true,
+      multiSelect: false,
+    };
+
+    expect(buildPendingUserInputAnswers([question], {})).toEqual({ value: "" });
+    expect(buildPendingUserInputAnswers([question], { value: { customAnswer: "   " } })).toEqual({
+      value: "   ",
+    });
   });
 });
 

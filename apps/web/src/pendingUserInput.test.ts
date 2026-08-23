@@ -153,6 +153,60 @@ describe("buildPendingUserInputAnswers", () => {
   it("returns null when any question is unanswered", () => {
     expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
   });
+
+  it("uses and preserves a multiline default value", () => {
+    const question = {
+      id: "value",
+      header: "Editor",
+      question: "Edit the text",
+      options: [],
+      defaultValue: "  first line\nsecond line  ",
+      inputKind: "multiline" as const,
+      multiSelect: false,
+    };
+
+    expect(buildPendingUserInputAnswers([question], {})).toEqual({
+      value: "  first line\nsecond line  ",
+    });
+    expect(derivePendingUserInputProgress([question], {}, 0).customAnswer).toBe(
+      "  first line\nsecond line  ",
+    );
+  });
+
+  it("submits legal empty and whitespace-only free-text answers", () => {
+    const question = {
+      id: "value",
+      header: "Editor",
+      question: "Edit the text",
+      options: [],
+      inputKind: "multiline" as const,
+      allowEmpty: true,
+      multiSelect: false,
+    };
+
+    expect(buildPendingUserInputAnswers([question], {})).toEqual({ value: "" });
+    expect(buildPendingUserInputAnswers([question], { value: { customAnswer: "   " } })).toEqual({
+      value: "   ",
+    });
+  });
+
+  it("preserves exact option values independently from their display labels", () => {
+    const question = {
+      ...singleSelectQuestion,
+      options: [
+        {
+          label: '" padded "',
+          description: "Exact padded value",
+          value: " padded ",
+        },
+      ],
+    };
+    const draft = togglePendingUserInputOptionSelection(question, undefined, " padded ");
+
+    expect(buildPendingUserInputAnswers([question], { scope: draft })).toEqual({
+      scope: " padded ",
+    });
+  });
 });
 
 describe("pending user input question progress", () => {

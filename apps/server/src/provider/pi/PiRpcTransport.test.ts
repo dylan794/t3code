@@ -12,8 +12,10 @@ import { describe, expect } from "vite-plus/test";
 import {
   buildPiRpcLaunchArgs,
   makePiRpcConnection,
+  type PiRpcTransportError,
   splitPiRpcStdoutChunk,
 } from "./PiRpcTransport.ts";
+import type { PiRpcEvent } from "./PiRpcProtocol.ts";
 
 const mockPeerPath = NodePath.join(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
@@ -140,6 +142,130 @@ describe("PiRpcTransport", () => {
         _tag: "PiRpcTransportError",
         operation: "response",
         detail: "mock rejected session name",
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("writes confirmation responses without waiting for a command response", () =>
+    Effect.gen(function* () {
+      const connection = yield* makePiRpcConnection({
+        nodePath: process.execPath,
+        piCliPath: mockPeerPath,
+        extensionPath: "ignored-by-mock",
+        cwd: NodePath.dirname(mockPeerPath),
+      });
+
+      const eventsFiber = yield* connection.events.pipe(
+        Stream.takeUntil((event) => event.type === "run.settled"),
+        Stream.mapEffect(
+          (event): Effect.Effect<PiRpcEvent, PiRpcTransportError> =>
+            event.type === "extension-ui.requested" && event.method === "confirm"
+              ? Effect.all(
+                  [
+                    connection.respondToExtensionUI({
+                      type: "extension_ui_response",
+                      id: event.requestId,
+                      confirmed: true,
+                    }),
+                    connection.request({ type: "get_state" }),
+                  ],
+                  { concurrency: "unbounded" },
+                ).pipe(Effect.as(event))
+              : Effect.succeed(event),
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* connection.prompt("confirm");
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+
+      expect(events).toContainEqual({
+        type: "extension-ui.requested",
+        requestId: "mock-confirm",
+        method: "confirm",
+        title: "Run command?",
+        message: "npm test",
+        timeout: 10_000,
+      });
+      expect(events).toContainEqual({
+        type: "assistant.delta",
+        stream: "text",
+        contentIndex: 0,
+        delta: "confirmed",
+      });
+
+      const cancelledEventsFiber = yield* connection.events.pipe(
+        Stream.takeUntil((event) => event.type === "run.settled"),
+        Stream.mapEffect(
+          (event): Effect.Effect<PiRpcEvent, PiRpcTransportError> =>
+            event.type === "extension-ui.requested" && event.method === "confirm"
+              ? connection
+                  .respondToExtensionUI({
+                    type: "extension_ui_response",
+                    id: event.requestId,
+                    cancelled: true,
+                  })
+                  .pipe(Effect.as(event))
+              : Effect.succeed(event),
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* connection.prompt("confirm");
+      const cancelledEvents = Array.from(yield* Fiber.join(cancelledEventsFiber));
+      expect(cancelledEvents).toContainEqual({
+        type: "assistant.delta",
+        stream: "text",
+        contentIndex: 0,
+        delta: "cancelled",
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("writes value responses for extension text input", () =>
+    Effect.gen(function* () {
+      const connection = yield* makePiRpcConnection({
+        nodePath: process.execPath,
+        piCliPath: mockPeerPath,
+        extensionPath: "ignored-by-mock",
+        cwd: NodePath.dirname(mockPeerPath),
+      });
+
+      const eventsFiber = yield* connection.events.pipe(
+        Stream.takeUntil((event) => event.type === "run.settled"),
+        Stream.mapEffect(
+          (event): Effect.Effect<PiRpcEvent, PiRpcTransportError> =>
+            event.type === "extension-ui.requested" && event.method === "input"
+              ? connection
+                  .respondToExtensionUI({
+                    type: "extension_ui_response",
+                    id: event.requestId,
+                    value: "Dylan",
+                  })
+                  .pipe(Effect.as(event))
+              : Effect.succeed(event),
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* connection.prompt("input");
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+
+      expect(events).toContainEqual({
+        type: "extension-ui.requested",
+        requestId: "mock-input",
+        method: "input",
+        title: "Your name",
+        placeholder: "Type a name",
+      });
+      expect(events).toContainEqual({
+        type: "assistant.delta",
+        stream: "text",
+        contentIndex: 0,
+        delta: "input:Dylan",
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

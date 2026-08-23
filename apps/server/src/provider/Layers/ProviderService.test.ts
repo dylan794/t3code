@@ -14,7 +14,6 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
-  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -156,6 +155,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       _threadId: ThreadId,
       _requestId: string,
       _answers: Record<string, unknown>,
+      _cancelled?: boolean,
     ): Effect.Effect<void, ProviderAdapterError> => Effect.void,
   );
 
@@ -978,6 +978,17 @@ routing.layer("ProviderServiceLive routing", (it) => {
             sandbox_mode: "workspace-write",
           },
         ],
+      ]);
+
+      routing.codex.respondToUserInput.mockClear();
+      yield* provider.respondToUserInput({
+        threadId: session.threadId,
+        requestId: asRequestId("req-user-input-cancel-1"),
+        answers: {},
+        cancelled: true,
+      });
+      assert.deepEqual(routing.codex.respondToUserInput.mock.calls, [
+        [session.threadId, asRequestId("req-user-input-cancel-1"), {}, true],
       ]);
 
       yield* provider.rollbackConversation({

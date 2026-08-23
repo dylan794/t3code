@@ -67,6 +67,7 @@ export interface PendingUserInputCardProps {
     customAnswer: string,
   ) => void;
   readonly onSubmit: () => Promise<unknown>;
+  readonly onCancel: () => Promise<unknown>;
 }
 
 /**
@@ -259,12 +260,13 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               </Text>
               <View className="gap-2">
                 {question.options.map((option) => {
-                  const selected = isPendingUserInputOptionSelected(draft, option.label);
+                  const optionValue = option.value ?? option.label;
+                  const selected = isPendingUserInputOptionSelected(draft, optionValue);
                   const description =
                     option.description !== option.label ? option.description : undefined;
                   return (
                     <Pressable
-                      key={option.label}
+                      key={`${option.label}:${optionValue}`}
                       className={cn(
                         "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                         selected
@@ -275,7 +277,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         props.onSelectOption(
                           props.pendingUserInput.requestId,
                           question,
-                          option.label,
+                          optionValue,
                         )
                       }
                     >
@@ -301,31 +303,46 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                 })}
               </View>
               <TextInput
-                value={draft?.customAnswer ?? ""}
+                value={draft?.customAnswer ?? question.defaultValue ?? ""}
                 onChangeText={(value) =>
                   props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
                 }
                 onFocus={() => props.onInputFocusChange?.(true)}
                 onBlur={() => props.onInputFocusChange?.(false)}
-                placeholder="Or type a custom answer"
+                placeholder={question.placeholder ?? "Or type a custom answer"}
+                multiline={question.inputKind === "multiline"}
                 className="min-h-[54px] rounded-2xl border border-neutral-200 bg-white px-3.5 py-3 font-sans text-base text-neutral-950 dark:border-white/8 dark:bg-neutral-950/70 dark:text-neutral-50"
               />
             </View>
           );
         })}
       </ScrollView>
-      <Pressable
-        className={cn(
-          "items-center justify-center rounded-2xl px-4 py-3.5",
-          props.answers ? "bg-blue-500" : "bg-neutral-200 dark:bg-neutral-700/60",
-        )}
-        disabled={
-          props.answers === null || props.respondingUserInputId === props.pendingUserInput.requestId
-        }
-        onPress={() => void props.onSubmit()}
-      >
-        <Text className="font-t3-extrabold text-sm text-white">Submit answers</Text>
-      </Pressable>
+      <View className="gap-2">
+        {props.pendingUserInput.supportsCancellation ? (
+          <Pressable
+            className="items-center justify-center rounded-2xl bg-neutral-200 px-4 py-3 dark:bg-neutral-800"
+            disabled={props.respondingUserInputId === props.pendingUserInput.requestId}
+            onPress={() => void props.onCancel()}
+          >
+            <Text className="font-t3-bold text-sm text-neutral-950 dark:text-neutral-50">
+              Cancel
+            </Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          className={cn(
+            "items-center justify-center rounded-2xl px-4 py-3.5",
+            props.answers ? "bg-blue-500" : "bg-neutral-200 dark:bg-neutral-700/60",
+          )}
+          disabled={
+            props.answers === null ||
+            props.respondingUserInputId === props.pendingUserInput.requestId
+          }
+          onPress={() => void props.onSubmit()}
+        >
+          <Text className="font-t3-extrabold text-sm text-white">Submit answers</Text>
+        </Pressable>
+      </View>
     </Animated.View>
   ) : null;
   return (

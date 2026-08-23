@@ -3524,6 +3524,7 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-user-input"),
       requestId: ApprovalRequestId.make("req-user-input-1"),
       payload: {
+        supportsCancellation: true,
         questions: [
           {
             id: "sandbox_mode",
@@ -3549,9 +3550,8 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-user-input"),
       requestId: ApprovalRequestId.make("req-user-input-1"),
       payload: {
-        answers: {
-          sandbox_mode: "workspace-write",
-        },
+        answers: {},
+        cancelled: true,
       },
     });
 
@@ -3570,6 +3570,11 @@ describe("ProviderRuntimeIngestion", () => {
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-requested",
     );
     expect(requested?.kind).toBe("user-input.requested");
+    const requestedPayload =
+      requested?.payload && typeof requested.payload === "object"
+        ? (requested.payload as Record<string, unknown>)
+        : undefined;
+    expect(requestedPayload?.supportsCancellation).toBe(true);
 
     const resolved = thread.activities.find(
       (activity: ProviderRuntimeTestActivity) => activity.id === "evt-user-input-resolved",
@@ -3579,9 +3584,9 @@ describe("ProviderRuntimeIngestion", () => {
         ? (resolved.payload as Record<string, unknown>)
         : undefined;
     expect(resolved?.kind).toBe("user-input.resolved");
-    expect(resolvedPayload?.answers).toEqual({
-      sandbox_mode: "workspace-write",
-    });
+    expect(resolved?.summary).toBe("User input cancelled");
+    expect(resolvedPayload?.answers).toEqual({});
+    expect(resolvedPayload?.cancelled).toBe(true);
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {

@@ -19,13 +19,12 @@ export interface PendingUserInputProgress {
   canAdvance: boolean;
 }
 
-function normalizeDraftAnswer(value: string | undefined): string | null {
+function normalizeDraftAnswer(value: string | undefined, allowEmpty: boolean): string | null {
   if (typeof value !== "string") {
     return null;
   }
 
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return allowEmpty || value.trim().length > 0 ? value : null;
 }
 
 function normalizeSelectedOptionLabels(value: string[] | undefined): string[] {
@@ -36,10 +35,7 @@ function normalizeSelectedOptionLabels(value: string[] | undefined): string[] {
   const normalized: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") continue;
-    const trimmed = entry.trim();
-    if (trimmed.length > 0) {
-      normalized.push(trimmed);
-    }
+    normalized.push(entry);
   }
 
   return Array.from(new Set(normalized));
@@ -49,8 +45,14 @@ export function resolvePendingUserInputAnswer(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
 ): string | string[] | null {
-  const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
+  const customAnswer = normalizeDraftAnswer(
+    draft?.customAnswer !== undefined
+      ? draft.customAnswer
+      : (question.defaultValue ??
+          (question.allowEmpty === true && question.options.length === 0 ? "" : undefined)),
+    question.allowEmpty === true,
+  );
+  if (customAnswer !== null) {
     return customAnswer;
   }
 
@@ -110,7 +112,7 @@ export function buildPendingUserInputAnswers(
 
   for (const question of questions) {
     const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (!answer) {
+    if (answer === null) {
       return null;
     }
     answers[question.id] = answer;
@@ -124,7 +126,9 @@ export function countAnsweredPendingUserInputQuestions(
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
   return questions.reduce((count, question) => {
-    return resolvePendingUserInputAnswer(question, draftAnswers[question.id]) ? count + 1 : count;
+    return resolvePendingUserInputAnswer(question, draftAnswers[question.id]) !== null
+      ? count + 1
+      : count;
   }, 0);
 }
 
@@ -133,7 +137,7 @@ export function findFirstUnansweredPendingUserInputQuestionIndex(
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
   const unansweredIndex = questions.findIndex(
-    (question) => !resolvePendingUserInputAnswer(question, draftAnswers[question.id]),
+    (question) => resolvePendingUserInputAnswer(question, draftAnswers[question.id]) === null,
   );
 
   return unansweredIndex === -1 ? Math.max(questions.length - 1, 0) : unansweredIndex;
@@ -151,7 +155,7 @@ export function derivePendingUserInputProgress(
   const resolvedAnswer = activeQuestion
     ? resolvePendingUserInputAnswer(activeQuestion, activeDraft)
     : null;
-  const customAnswer = activeDraft?.customAnswer ?? "";
+  const customAnswer = activeDraft?.customAnswer ?? activeQuestion?.defaultValue ?? "";
   const answeredQuestionCount = countAnsweredPendingUserInputQuestions(questions, draftAnswers);
   const isLastQuestion =
     questions.length === 0 ? true : normalizedQuestionIndex >= questions.length - 1;
@@ -167,6 +171,6 @@ export function derivePendingUserInputProgress(
     answeredQuestionCount,
     isLastQuestion,
     isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
-    canAdvance: Boolean(resolvedAnswer),
+    canAdvance: resolvedAnswer !== null,
   };
 }

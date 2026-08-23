@@ -86,6 +86,7 @@ export interface ProviderAdapterShape<TError> {
     threadId: ThreadId,
     requestId: ApprovalRequestId,
     answers: ProviderUserInputAnswers,
+    cancelled?: boolean,
   ) => Effect.Effect<void, TError>;
 
   /**

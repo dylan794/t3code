@@ -118,12 +118,14 @@ export interface PendingApproval {
   requestKind: "command" | "file-read" | "file-change";
   createdAt: string;
   detail?: string;
+  supportsAcceptForSession?: boolean;
 }
 
 export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  supportsCancellation?: boolean;
 }
 
 export interface ActivePlanState {
@@ -430,12 +432,17 @@ export function derivePendingApprovals(
           ? requestKindFromRequestType(payload.requestType)
           : null;
     const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+    const supportsAcceptForSession =
+      typeof payload?.supportsAcceptForSession === "boolean"
+        ? payload.supportsAcceptForSession
+        : undefined;
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
       openByRequestId.set(requestId, {
         requestId,
         requestKind,
         createdAt: activity.createdAt,
+        ...(supportsAcceptForSession !== undefined ? { supportsAcceptForSession } : {}),
         ...(detail ? { detail } : {}),
       });
       continue;
@@ -493,17 +500,23 @@ function parseUserInputQuestions(
           return {
             label: optionRecord.label,
             description: optionRecord.description,
+            ...(typeof optionRecord.value === "string" ? { value: optionRecord.value } : {}),
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
         question: question.question,
         options,
+        ...(typeof question.placeholder === "string" ? { placeholder: question.placeholder } : {}),
+        ...(typeof question.defaultValue === "string"
+          ? { defaultValue: question.defaultValue }
+          : {}),
+        ...(question.inputKind === "text" || question.inputKind === "multiline"
+          ? { inputKind: question.inputKind }
+          : {}),
+        ...(typeof question.allowEmpty === "boolean" ? { allowEmpty: question.allowEmpty } : {}),
         multiSelect: question.multiSelect === true,
       };
     })
@@ -537,6 +550,9 @@ export function derivePendingUserInputs(
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(typeof payload?.supportsCancellation === "boolean"
+          ? { supportsCancellation: payload.supportsCancellation }
+          : {}),
       });
       continue;
     }

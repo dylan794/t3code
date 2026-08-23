@@ -16,6 +16,7 @@ interface PendingUserInputPanelProps {
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onCancel: (requestId: ApprovalRequestId) => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -25,6 +26,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   questionIndex,
   onToggleOption,
   onAdvance,
+  onCancel,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -39,6 +41,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      onCancel={onCancel}
     />
   );
 });
@@ -50,6 +53,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex,
   onToggleOption,
   onAdvance,
+  onCancel,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
@@ -57,6 +61,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
   onAdvance: () => void;
+  onCancel: (requestId: ApprovalRequestId) => void;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
@@ -153,7 +158,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       const option = activeQuestion.options[optionIndex];
       if (!option) return;
       event.preventDefault();
-      handleOptionSelection(activeQuestion.id, option.label);
+      handleOptionSelection(activeQuestion.id, option.value ?? option.label);
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
@@ -213,6 +218,16 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             )}
           />
         </CollapsibleTrigger>
+        {prompt.supportsCancellation ? (
+          <button
+            type="button"
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/35 hover:text-foreground disabled:opacity-50"
+            disabled={isResponding}
+            onClick={() => onCancel(prompt.requestId)}
+          >
+            Cancel
+          </button>
+        ) : null}
       </div>
       {/* The panel carries the horizontal padding itself: it clips its content
           while the height animates, so the option buttons have to sit inside
@@ -225,12 +240,13 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           ) : null}
           <div className="mt-2 space-y-0.5">
             {activeQuestion.options.map((option, index) => {
+              const optionValue = option.value ?? option.label;
               const isOptimisticallySelected =
                 optimisticSingleSelect?.questionId === activeQuestion.id &&
-                optimisticSingleSelect.optionLabel === option.label;
+                optimisticSingleSelect.optionLabel === optionValue;
               const isSelected =
                 isOptimisticallySelected ||
-                (!customAnswerActive && progress.selectedOptionLabels.includes(option.label));
+                (!customAnswerActive && progress.selectedOptionLabels.includes(optionValue));
               const shortcutKey = index < 9 ? index + 1 : null;
               const className = cn(
                 "group flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left outline-none transition-colors duration-150 focus-visible:ring-1 focus-visible:ring-primary/25",
@@ -263,11 +279,11 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               );
               return (
                 <button
-                  key={`${activeQuestion.id}:${option.label}`}
+                  key={`${activeQuestion.id}:${option.label}:${optionValue}`}
                   type="button"
                   disabled={isResponding}
                   onClick={() => {
-                    handleOptionSelection(activeQuestion.id, option.label);
+                    handleOptionSelection(activeQuestion.id, optionValue);
                   }}
                   className={className}
                 >

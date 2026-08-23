@@ -99,6 +99,94 @@ describe("PiRpcProtocol", () => {
     }),
   );
 
+  it.effect("normalizes extension UI dialog requests", () =>
+    Effect.gen(function* () {
+      const select = yield* decode(
+        '{"type":"extension_ui_request","id":"select-1","method":"select","title":"Choose","options":["One","Two"],"timeout":5000}',
+      );
+      const confirm = yield* decode(
+        '{"type":"extension_ui_request","id":"confirm-1","method":"confirm","title":"Run command?","message":"npm test","timeout":10000}',
+      );
+      const input = yield* decode(
+        '{"type":"extension_ui_request","id":"input-1","method":"input","title":"Your name","placeholder":"Type a name","timeout":15000}',
+      );
+      const editor = yield* decode(
+        '{"type":"extension_ui_request","id":"editor-1","method":"editor","title":"Edit plan","prefill":"Line 1\\nLine 2"}',
+      );
+
+      expect(normalizePiRpcEvent(select)).toEqual([
+        {
+          type: "extension-ui.requested",
+          requestId: "select-1",
+          method: "select",
+          title: "Choose",
+          options: ["One", "Two"],
+          timeout: 5000,
+        },
+      ]);
+      expect(normalizePiRpcEvent(confirm)).toEqual([
+        {
+          type: "extension-ui.requested",
+          requestId: "confirm-1",
+          method: "confirm",
+          title: "Run command?",
+          message: "npm test",
+          timeout: 10000,
+        },
+      ]);
+      expect(normalizePiRpcEvent(input)).toEqual([
+        {
+          type: "extension-ui.requested",
+          requestId: "input-1",
+          method: "input",
+          title: "Your name",
+          placeholder: "Type a name",
+          timeout: 15000,
+        },
+      ]);
+      expect(normalizePiRpcEvent(editor)).toEqual([
+        {
+          type: "extension-ui.requested",
+          requestId: "editor-1",
+          method: "editor",
+          title: "Edit plan",
+          prefill: "Line 1\nLine 2",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("reports incomplete extension UI dialogs and invalid field types", () =>
+    Effect.gen(function* () {
+      const missingTitle = yield* decode(
+        '{"type":"extension_ui_request","id":"confirm-1","method":"confirm","message":"npm test"}',
+      );
+      expect(normalizePiRpcEvent(missingTitle)).toEqual([
+        {
+          type: "extension-ui.invalid",
+          requestId: "confirm-1",
+          message: "Pi emitted an invalid extension UI dialog request.",
+        },
+      ]);
+
+      const invalidOptions = yield* decodePiRpcLine(
+        '{"type":"extension_ui_request","id":"select-1","method":"select","title":"Choose","options":[1]}',
+      );
+      expect(normalizePiRpcEvent(invalidOptions)).toEqual([
+        {
+          type: "extension-ui.invalid",
+          requestId: "select-1",
+          message: "Pi emitted an invalid extension UI dialog request.",
+        },
+      ]);
+
+      const notification = yield* decode(
+        '{"type":"extension_ui_request","id":"notify-1","method":"notify","message":"Done"}',
+      );
+      expect(normalizePiRpcEvent(notification)).toEqual([]);
+    }),
+  );
+
   it.effect("rejects invalid JSON without throwing a defect", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(decodePiRpcLine("not-json"));

@@ -23,6 +23,24 @@ The `pi` driver launches Pi in RPC mode with only the configured Jarvis extensio
 Pi's terminal presentation while Pi remains the coordinating runtime and Jarvis keeps ownership of
 its job manager and action policy. One scoped Pi process is owned by each active T3 thread.
 
+### Pi interactions
+
+The Pi adapter translates extension UI requests into T3's provider-neutral interaction events:
+
+- Pi `confirm` dialogs become approval cards. Approve, decline, and cancel are supported. Pi does
+  not provide session-persistent confirmation semantics, so these cards do not offer "always allow
+  this session."
+- Pi `select`, `input`, and `editor` dialogs become structured user-input cards. They can be
+  cancelled without interrupting the turn. Select values round-trip exactly, including surrounding
+  whitespace, while text and editor dialogs can submit empty values and preserve editor defaults.
+- Pi timeouts, turn interruption, session stop, and process exit resolve the corresponding T3 card
+  so stale interactions are not left in the thread.
+
+Structured answers are persisted with the thread like other provider events. They are for ordinary,
+non-secret input only. Pi's RPC dialog protocol does not identify masked or secret fields, so API
+keys, passwords, and tokens need a separate ephemeral input path before they can be collected in
+this interface.
+
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in
 `apps/server/src/provider/Layers/` (`CodexAdapter.ts`, `ClaudeAdapter.ts`, and so on) and conform to
