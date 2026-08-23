@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   DEFAULT_SERVER_SETTINGS,
+  PiSettings,
   defaultEnabledForDriver,
   resolveProviderInstanceEnabled,
   ServerSettings,
@@ -17,6 +18,19 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodePiSettings = Schema.decodeUnknownSync(PiSettings);
+
+describe("PiSettings", () => {
+  it("keeps the fork-only Jarvis provider out of legacy defaults", () => {
+    expect(decodePiSettings({})).toEqual({
+      enabled: true,
+      jarvisProjectPath: "",
+      launchArgs: "",
+      customModels: [],
+    });
+    expect(DEFAULT_SERVER_SETTINGS.providers).not.toHaveProperty("pi");
+  });
+});
 
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
