@@ -36,6 +36,8 @@ export type PiRpcCommand =
   | { readonly type: "get_commands" }
   | { readonly type: "get_messages" }
   | { readonly type: "get_entries"; readonly since?: string }
+  | { readonly type: "get_fork_messages" }
+  | { readonly type: "fork"; readonly entryId: string }
   | { readonly type: "set_model"; readonly provider: string; readonly modelId: string }
   | { readonly type: "set_thinking_level"; readonly level: PiThinkingLevel }
   | { readonly type: "set_session_name"; readonly name: string }
@@ -66,6 +68,12 @@ const PiRpcWireCommand = Schema.Union([
   Schema.Struct({ id: Schema.String, type: Schema.Literal("get_available_models") }),
   Schema.Struct({ id: Schema.String, type: Schema.Literal("get_commands") }),
   Schema.Struct({ id: Schema.String, type: Schema.Literal("get_messages") }),
+  Schema.Struct({ id: Schema.String, type: Schema.Literal("get_fork_messages") }),
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal("fork"),
+    entryId: Schema.String,
+  }),
   Schema.Struct({
     id: Schema.String,
     type: Schema.Literal("get_entries"),

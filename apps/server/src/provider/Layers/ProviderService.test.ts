@@ -1025,6 +1025,33 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("persists replacement resume state returned by rollback", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-rollback-resume-state");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      const replacementResumeCursor = { opaque: "resume-after-native-rollback" };
+      routing.codex.rollbackThread.mockImplementationOnce(() =>
+        Effect.succeed({ threadId, turns: [], resumeCursor: replacementResumeCursor }),
+      );
+      yield* provider.rollbackConversation({ threadId, numTurns: 1 });
+      yield* provider.stopSession({ threadId });
+
+      routing.codex.startSession.mockClear();
+      yield* provider.sendTurn({ threadId, input: "continue after rollback", attachments: [] });
+
+      const resumedStartInput = routing.codex.startSession.mock.calls[0]?.[0];
+      assert.deepEqual(resumedStartInput?.resumeCursor, replacementResumeCursor);
+    }),
+  );
+
   it.effect("routes feedback to the Codex adapter and returns its feedback ID", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

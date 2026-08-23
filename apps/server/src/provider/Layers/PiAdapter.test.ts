@@ -387,6 +387,62 @@ describe("PiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("rolls Pi back by forking before the removed user turn", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-rollback-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      for (const input of ["first", "second"]) {
+        const completedFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.sendTurn({ threadId, input });
+        yield* Fiber.join(completedFiber);
+      }
+
+      expect((yield* adapter.readThread(threadId)).turns).toHaveLength(2);
+      const invalid = yield* Effect.flip(adapter.rollbackThread(threadId, 0));
+      expect(invalid).toMatchObject({
+        _tag: "ProviderAdapterValidationError",
+        issue: "numTurns must be an integer >= 1.",
+      });
+
+      const firstRollback = yield* adapter.rollbackThread(threadId, 1);
+      expect(firstRollback.turns).toHaveLength(1);
+      expect(firstRollback.resumeCursor).toEqual({
+        schemaVersion: 1,
+        sessionFile: "mock-session-fork-1.jsonl",
+        sessionId: "mock-session-fork-1",
+      });
+      expect((yield* adapter.listSessions())[0]?.resumeCursor).toEqual(firstRollback.resumeCursor);
+
+      const secondRollback = yield* adapter.rollbackThread(threadId, 99);
+      expect(secondRollback.turns).toHaveLength(0);
+      expect(secondRollback.resumeCursor).toEqual({
+        schemaVersion: 1,
+        sessionFile: "mock-session-fork-2.jsonl",
+        sessionId: "mock-session-fork-2",
+      });
+
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("clears timed-out and stopped Pi interactions from the durable UI", () =>
     Effect.gen(function* () {
       const jarvisRoot = makeFakeJarvisRoot();

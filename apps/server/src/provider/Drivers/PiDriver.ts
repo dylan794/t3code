@@ -84,6 +84,9 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         instanceId,
         environment: processEnvironment,
       });
+      const textGeneration = yield* makePiTextGeneration(effectiveConfig, {
+        environment: processEnvironment,
+      });
       const maintenanceCapabilities = makeManualOnlyProviderMaintenanceCapabilities({
         provider: DRIVER_KIND,
         packageName: null,
@@ -123,7 +126,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         enabled,
         snapshot,
         adapter,
-        textGeneration: makePiTextGeneration(),
+        textGeneration,
       } satisfies ProviderInstance;
     }),
 };

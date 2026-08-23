@@ -3,6 +3,10 @@ import * as NodeReadline from "node:readline";
 const output = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const input = NodeReadline.createInterface({ input: process.stdin });
 const pendingDialogs = new Map();
+let currentSessionFile = "mock-session.jsonl";
+let currentSessionId = "mock-session";
+let forkSequence = 0;
+let forkMessages = [];
 
 const finishRun = (text) => {
   output({ type: "message_start", message: { role: "assistant" } });
@@ -40,7 +44,43 @@ input.on("line", (line) => {
       type: "response",
       command: "get_state",
       success: true,
-      data: { sessionId: "mock-session", sessionFile: "mock-session.jsonl" },
+      data: { sessionId: currentSessionId, sessionFile: currentSessionFile },
+    });
+    return;
+  }
+  if (command.type === "get_fork_messages") {
+    output({
+      id: command.id,
+      type: "response",
+      command: "get_fork_messages",
+      success: true,
+      data: { messages: forkMessages },
+    });
+    return;
+  }
+  if (command.type === "fork") {
+    const targetIndex = forkMessages.findIndex((message) => message.entryId === command.entryId);
+    if (targetIndex < 0) {
+      output({
+        id: command.id,
+        type: "response",
+        command: "fork",
+        success: false,
+        error: "unknown fork entry",
+      });
+      return;
+    }
+    const target = forkMessages[targetIndex];
+    forkMessages = forkMessages.slice(0, targetIndex);
+    forkSequence += 1;
+    currentSessionId = `mock-session-fork-${forkSequence}`;
+    currentSessionFile = `${currentSessionId}.jsonl`;
+    output({
+      id: command.id,
+      type: "response",
+      command: "fork",
+      success: true,
+      data: { text: target.text, cancelled: false },
     });
     return;
   }
@@ -65,6 +105,10 @@ input.on("line", (line) => {
     return;
   }
   if (command.type === "prompt") {
+    forkMessages.push({
+      entryId: `mock-entry-${forkMessages.length + 1}`,
+      text: command.message,
+    });
     output({ id: command.id, type: "response", command: "prompt", success: true });
     output({ type: "agent_start" });
     if (command.message === "wait") return;

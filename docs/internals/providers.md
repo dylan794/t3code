@@ -41,6 +41,26 @@ non-secret input only. Pi's RPC dialog protocol does not identify masked or secr
 keys, passwords, and tokens need a separate ephemeral input path before they can be collected in
 this interface.
 
+### Pi metadata and rollback
+
+T3 title, branch, commit, and change-request generation uses a separate ephemeral Pi JSON process.
+That process receives the selected Pi model but loads no session, extension, skill, prompt template,
+context file, or tool. T3 validates the final assistant message against the same output schema used
+by the stock providers, then applies the existing title and Git text sanitizers.
+
+Pi rollback uses Pi's native session tree instead of trimming only T3's in-memory transcript. The
+adapter reads `get_fork_messages`, forks immediately before the oldest turn being removed, refreshes
+Pi's session state, and returns the replacement resume cursor. `ProviderService` persists that
+cursor, so a stopped or failed process resumes from the rolled-back session rather than the old
+branch. Rollback rejects an active turn and accepts requests larger than the current history as a
+full rollback.
+
+Metadata child processes have a three-minute deadline and are killed when they time out. Invalid
+JSON, invalid schema output, provider errors, missing runtime files, and nonzero exits return typed
+text-generation errors. The live Pi integration test uses a disposable profile and local model
+endpoint to verify metadata generation, native rollback, process restart, session resume, and a
+successful follow-up turn without reading or writing T3's installed application data.
+
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in
 `apps/server/src/provider/Layers/` (`CodexAdapter.ts`, `ClaudeAdapter.ts`, and so on) and conform to

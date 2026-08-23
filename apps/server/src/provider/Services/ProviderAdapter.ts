@@ -42,6 +42,8 @@ export interface ProviderThreadTurnSnapshot {
 export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
+  /** Updated provider-native resume state when an operation replaces the backing session. */
+  readonly resumeCursor?: unknown;
 }
 
 export interface ProviderAdapterShape<TError> {

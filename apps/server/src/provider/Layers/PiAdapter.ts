@@ -75,6 +75,22 @@ const PiCommands = Schema.Struct({
 });
 const decodePiCommands = Schema.decodeUnknownExit(PiCommands);
 
+const PiForkMessages = Schema.Struct({
+  messages: Schema.Array(
+    Schema.Struct({
+      entryId: Schema.String,
+      text: Schema.String,
+    }),
+  ),
+});
+const decodePiForkMessages = Schema.decodeUnknownExit(PiForkMessages);
+
+const PiForkResult = Schema.Struct({
+  text: Schema.String,
+  cancelled: Schema.Boolean,
+});
+const decodePiForkResult = Schema.decodeUnknownExit(PiForkResult);
+
 interface PiTurnSnapshot {
   readonly id: TurnId;
   readonly items: Array<unknown>;
@@ -104,6 +120,16 @@ interface PiSessionContext {
 export interface PiAdapterOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
+}
+
+function resumeCursorFromPiState(state: typeof PiState.Type) {
+  return state.sessionFile
+    ? {
+        schemaVersion: PI_RESUME_VERSION,
+        sessionFile: state.sessionFile,
+        ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+      }
+    : undefined;
 }
 
 function parseModelSlug(
@@ -406,19 +432,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           return;
         case "run.settled": {
           yield* clearPendingInteractions(context, "settled");
-          if (turnId && !context.interrupted) {
-            const failed = context.assistantStopReason === "error";
-            yield* publish({
-              type: "turn.completed",
-              ...(yield* makeStamp()),
-              ...eventBase(context),
-              turnId,
-              payload: {
-                state: failed ? "failed" : "completed",
-                stopReason: context.assistantStopReason ?? null,
-              },
-            });
-          }
+          const interrupted = context.interrupted;
+          const stopReason = context.assistantStopReason;
+          const failed = stopReason === "error";
           context.activeTurnId = undefined;
           context.assistantItemId = undefined;
           context.assistantStopReason = undefined;
@@ -429,6 +445,18 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             activeTurnId: undefined,
             updatedAt: yield* nowIso,
           };
+          if (turnId && !interrupted) {
+            yield* publish({
+              type: "turn.completed",
+              ...(yield* makeStamp()),
+              ...eventBase(context),
+              turnId,
+              payload: {
+                state: failed ? "failed" : "completed",
+                stopReason: stopReason ?? null,
+              },
+            });
+          }
           yield* publish({
             type: "session.state.changed",
             ...(yield* makeStamp()),
@@ -731,14 +759,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const stateResponse = yield* rpc.getState().pipe(Effect.mapError(mapRpcError("get_state")));
       const state = decodePiState(stateResponse);
       const now = yield* nowIso;
-      const resumeCursor =
-        Exit.isSuccess(state) && state.value.sessionFile
-          ? {
-              schemaVersion: PI_RESUME_VERSION,
-              sessionFile: state.value.sessionFile,
-              ...(state.value.sessionId ? { sessionId: state.value.sessionId } : {}),
-            }
-          : undefined;
+      const resumeCursor = Exit.isSuccess(state) ? resumeCursorFromPiState(state.value) : undefined;
       const session: ProviderSession = {
         provider: PROVIDER,
         providerInstanceId: boundInstanceId,
@@ -905,17 +926,102 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       }
     });
 
-  const unsupported = (method: string) =>
-    new ProviderAdapterRequestError({
-      provider: PROVIDER,
-      method,
-      detail: `${method} is not supported by the Day 1 Pi adapter.`,
-    });
-
   const readThread: PiAdapterShape["readThread"] = (threadId) =>
     Effect.map(requireSession(threadId), (context) => ({ threadId, turns: context.turns }));
-  const rollbackThread: PiAdapterShape["rollbackThread"] = () =>
-    Effect.fail(unsupported("rollbackThread"));
+  const rollbackThread: PiAdapterShape["rollbackThread"] = (threadId, numTurns) =>
+    Effect.gen(function* () {
+      if (!Number.isInteger(numTurns) || numTurns < 1) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "rollbackThread",
+          issue: "numTurns must be an integer >= 1.",
+        });
+      }
+
+      const context = yield* requireSession(threadId);
+      if (context.activeTurnId) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "rollbackThread",
+          issue: "Interrupt the active Pi turn before rolling back the thread.",
+        });
+      }
+
+      const messagesResponse = yield* context.rpc
+        .request({ type: "get_fork_messages" })
+        .pipe(Effect.mapError(mapRpcError("get_fork_messages")));
+      const forkMessages = decodePiForkMessages(messagesResponse.data);
+      if (Exit.isFailure(forkMessages)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "get_fork_messages",
+          detail: "Pi returned invalid fork-message data.",
+          cause: forkMessages.cause,
+        });
+      }
+
+      if (forkMessages.value.messages.length === 0) {
+        return {
+          threadId,
+          turns: context.turns,
+          ...(context.session.resumeCursor !== undefined
+            ? { resumeCursor: context.session.resumeCursor }
+            : {}),
+        };
+      }
+
+      const targetIndex = Math.max(0, forkMessages.value.messages.length - numTurns);
+      const target = forkMessages.value.messages[targetIndex];
+      if (!target) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "get_fork_messages",
+          detail: "Pi did not return a rollback target.",
+        });
+      }
+
+      const forkResponse = yield* context.rpc
+        .request({ type: "fork", entryId: target.entryId })
+        .pipe(Effect.mapError(mapRpcError("fork")));
+      const forkResult = decodePiForkResult(forkResponse.data);
+      if (Exit.isFailure(forkResult)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "fork",
+          detail: "Pi returned invalid fork data.",
+          cause: forkResult.cause,
+        });
+      }
+      if (forkResult.value.cancelled) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "fork",
+          detail: "A Pi extension cancelled the rollback.",
+        });
+      }
+
+      const stateResponse = yield* context.rpc
+        .getState()
+        .pipe(Effect.mapError(mapRpcError("get_state")));
+      const state = decodePiState(stateResponse);
+      const resumeCursor = Exit.isSuccess(state) ? resumeCursorFromPiState(state.value) : undefined;
+      if (!resumeCursor) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "get_state",
+          detail: "Pi did not report resume state after rollback.",
+          ...(Exit.isFailure(state) ? { cause: state.cause } : {}),
+        });
+      }
+
+      context.turns.splice(Math.max(0, context.turns.length - numTurns));
+      context.session = {
+        ...context.session,
+        resumeCursor,
+        updatedAt: yield* nowIso,
+      };
+      return { threadId, turns: context.turns, resumeCursor };
+    });
   const respondToRequest: PiAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
     Effect.gen(function* () {
       const context = yield* requireSession(threadId);
