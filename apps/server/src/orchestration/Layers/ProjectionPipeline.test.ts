@@ -239,7 +239,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(unsettledRows, [{ settledOverride: "active", settledAt: null }]);
 
       yield* eventStore.append({
-        type: "thread.viewed",
+        type: "thread.meta-updated",
         eventId: EventId.make("evt-viewed-1"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-1"),
@@ -251,6 +251,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           viewedAt: "2026-01-01T00:00:03.000Z",
+          updatedAt: "2026-01-01T00:00:02.000Z",
         },
       });
       yield* projectionPipeline.bootstrap;
@@ -273,7 +274,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       ]);
 
       yield* eventStore.append({
-        type: "thread.marked-unread",
+        type: "thread.meta-updated",
         eventId: EventId.make("evt-marked-unread-1"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-1"),
@@ -285,6 +286,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         payload: {
           threadId: ThreadId.make("thread-1"),
           viewedAt: "2025-12-31T23:59:59.999Z",
+          updatedAt: "2026-01-01T00:00:02.000Z",
         },
       });
       yield* projectionPipeline.bootstrap;

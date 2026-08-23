@@ -145,16 +145,6 @@ export function applyThreadDetailEvent(
         },
       };
 
-    case "thread.viewed":
-    case "thread.marked-unread":
-      return {
-        kind: "updated",
-        thread: {
-          ...thread,
-          viewedAt: event.payload.viewedAt,
-        },
-      };
-
     case "thread.snoozed":
       return {
         kind: "updated",
@@ -228,6 +218,7 @@ export function applyThreadDetailEvent(
           ...(event.payload.worktreePath !== undefined
             ? { worktreePath: event.payload.worktreePath }
             : {}),
+          ...(event.payload.viewedAt !== undefined ? { viewedAt: event.payload.viewedAt } : {}),
           updatedAt: event.payload.updatedAt,
         },
       };

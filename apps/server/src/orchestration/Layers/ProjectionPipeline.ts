@@ -696,21 +696,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
-        case "thread.viewed":
-        case "thread.marked-unread": {
-          const existingRow = yield* projectionThreadRepository.getById({
-            threadId: event.payload.threadId,
-          });
-          if (Option.isNone(existingRow)) {
-            return;
-          }
-          yield* projectionThreadRepository.upsert({
-            ...existingRow.value,
-            viewedAt: event.payload.viewedAt,
-          });
-          return;
-        }
-
         case "thread.snoozed": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -815,6 +800,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
               : {}),
+            ...(event.payload.viewedAt !== undefined ? { viewedAt: event.payload.viewedAt } : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;
