@@ -27,6 +27,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
+  RuntimeRequestId,
   ResolvedKeybindingRule,
   ThreadId,
   WS_METHODS,
@@ -647,6 +649,7 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderService.ProviderService)({
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
+            streamEvents: Stream.never,
             ...options?.layers?.providerService,
           }),
         ),
@@ -6310,6 +6313,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
       assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("forwards transient provider composer text requests to thread subscribers", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const providerEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+      const composerRequest = {
+        type: "composer.text.requested",
+        eventId: EventId.make("event-composer-text"),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: "2026-08-23T00:00:00.000Z",
+        threadId: defaultThreadId,
+        requestId: RuntimeRequestId.make("editor-text-1"),
+        payload: { text: "Voice transcript for correction" },
+      } satisfies ProviderRuntimeEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            streamEvents: Stream.fromPubSub(providerEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Effect.sleep("25 millis");
+                yield* PubSub.publish(providerEvents, composerRequest);
+                return Option.some({ snapshotSequence: 1, thread });
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], {
+        kind: "composer-text-requested",
+        requestId: RuntimeRequestId.make("editor-text-1"),
+        text: "Voice transcript for correction",
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

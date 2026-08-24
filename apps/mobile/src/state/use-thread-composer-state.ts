@@ -16,6 +16,7 @@ import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
+  registerThreadClientEffectHandler,
   submitCodexFeedback,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
@@ -100,6 +101,20 @@ export function useThreadComposerState() {
   useEffect(() => {
     ensureComposerDraftsLoaded();
   }, []);
+
+  useEffect(() => {
+    if (!selectedThreadShell) {
+      return;
+    }
+    const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    return registerThreadClientEffectHandler(
+      selectedThreadShell.environmentId,
+      selectedThreadShell.id,
+      (effect) => {
+        setComposerDraftText(threadKey, effect.text);
+      },
+    );
+  }, [selectedThreadShell]);
 
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)

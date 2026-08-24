@@ -95,6 +95,71 @@ function makeThreadOlderTurnRequestRegistry(): ThreadOlderTurnRequestRegistry {
 
 const defaultOlderTurnRequestRegistry = makeThreadOlderTurnRequestRegistry();
 
+export type ThreadClientEffect = Extract<
+  OrchestrationThreadStreamItem,
+  { readonly kind: "composer-text-requested" }
+>;
+
+interface ThreadClientEffectRegistry {
+  readonly register: (key: string, handler: (effect: ThreadClientEffect) => void) => () => void;
+  readonly publish: (key: string, effect: ThreadClientEffect) => void;
+}
+
+const MAX_PENDING_THREAD_CLIENT_EFFECTS = 128;
+
+function makeThreadClientEffectRegistry(): ThreadClientEffectRegistry {
+  const handlers = new Map<string, (effect: ThreadClientEffect) => void>();
+  const pending = new Map<string, ThreadClientEffect>();
+  return {
+    register: (key, handler) => {
+      handlers.set(key, handler);
+      const waiting = pending.get(key);
+      if (waiting !== undefined) {
+        pending.delete(key);
+        handler(waiting);
+      }
+      return () => {
+        if (handlers.get(key) === handler) {
+          handlers.delete(key);
+        }
+      };
+    },
+    publish: (key, effect) => {
+      const handler = handlers.get(key);
+      if (handler === undefined) {
+        pending.delete(key);
+        pending.set(key, effect);
+        if (pending.size > MAX_PENDING_THREAD_CLIENT_EFFECTS) {
+          const oldestKey = pending.keys().next().value;
+          if (oldestKey !== undefined) {
+            pending.delete(oldestKey);
+          }
+        }
+      } else {
+        handler(effect);
+      }
+    },
+  };
+}
+
+const defaultThreadClientEffectRegistry = makeThreadClientEffectRegistry();
+
+export function registerThreadClientEffectHandler(
+  environmentId: EnvironmentIdType,
+  threadId: ThreadIdType,
+  handler: (effect: ThreadClientEffect) => void,
+): () => void {
+  return defaultThreadClientEffectRegistry.register(
+    threadKey({ environmentId, threadId }),
+    handler,
+  );
+}
+
+export class ThreadClientEffects extends Context.Reference<ThreadClientEffectRegistry>(
+  "@t3tools/client-runtime/state/threads/ThreadClientEffects",
+  { defaultValue: () => defaultThreadClientEffectRegistry },
+) {}
+
 /**
  * Channel from UI actions to the live per-thread state machines. The machines
  * resolve it from the Effect environment (overridable in tests); the default
@@ -138,6 +203,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ThreadSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
+  const clientEffects = yield* ThreadClientEffects;
   const environmentId = supervisor.target.environmentId;
   const cached = yield* cache.loadThread(environmentId, threadId).pipe(
     Effect.catch((error) =>
@@ -335,6 +401,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       yield* Ref.update(historyEpoch, (epoch) => epoch + 1);
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread, pageStateFromSnapshot(item.snapshot.page));
+      return;
+    }
+
+    if (item.kind === "composer-text-requested") {
+      clientEffects.publish(threadKey({ environmentId, threadId }), item);
       return;
     }
 

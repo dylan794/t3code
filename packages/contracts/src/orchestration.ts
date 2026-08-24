@@ -17,6 +17,7 @@ import {
   PositiveInt,
   ProjectId,
   ProviderItemId,
+  RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
@@ -1516,6 +1517,11 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("composer-text-requested"),
+    requestId: RuntimeRequestId,
+    text: Schema.String,
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;

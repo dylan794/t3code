@@ -236,6 +236,42 @@ describe("PiAdapter", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("publishes Pi editor text requests without starting another turn", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-editor-text-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "composer.text.requested"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* adapter.sendTurn({ threadId, input: "set-editor-text" });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+
+      expect(events.at(-1)).toMatchObject({
+        type: "composer.text.requested",
+        threadId,
+        requestId: "mock-editor-text",
+        payload: { text: "Voice transcript for correction" },
+      });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("maps Pi input, select, and editor dialogs to structured user input", () =>
     Effect.gen(function* () {
       const jarvisRoot = makeFakeJarvisRoot();

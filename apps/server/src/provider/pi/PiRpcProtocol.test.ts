@@ -187,6 +187,22 @@ describe("PiRpcProtocol", () => {
     }),
   );
 
+  it.effect("normalizes fire-and-forget editor text requests", () =>
+    Effect.gen(function* () {
+      const request = yield* decode(
+        '{"type":"extension_ui_request","id":"editor-text-1","method":"set_editor_text","text":" Keep this whitespace\\n"}',
+      );
+
+      expect(normalizePiRpcEvent(request)).toEqual([
+        {
+          type: "editor-text.requested",
+          requestId: "editor-text-1",
+          text: " Keep this whitespace\n",
+        },
+      ]);
+    }),
+  );
+
   it.effect("rejects invalid JSON without throwing a defect", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(decodePiRpcLine("not-json"));

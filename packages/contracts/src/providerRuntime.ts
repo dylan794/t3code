@@ -192,6 +192,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "config.warning",
   "deprecation.notice",
   "files.persisted",
+  "composer.text.requested",
   "runtime.warning",
   "runtime.error",
 ]);
@@ -243,6 +244,7 @@ const ModelReroutedType = Schema.Literal("model.rerouted");
 const ConfigWarningType = Schema.Literal("config.warning");
 const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
+const ComposerTextRequestedType = Schema.Literal("composer.text.requested");
 const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
@@ -784,6 +786,11 @@ const RuntimeErrorPayload = Schema.Struct({
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;
 
+const ComposerTextRequestedPayload = Schema.Struct({
+  text: Schema.String,
+});
+export type ComposerTextRequestedPayload = typeof ComposerTextRequestedPayload.Type;
+
 const ProviderRuntimeSessionStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: SessionStartedType,
@@ -1123,6 +1130,14 @@ const ProviderRuntimeFilesPersistedEvent = Schema.Struct({
 });
 export type ProviderRuntimeFilesPersistedEvent = typeof ProviderRuntimeFilesPersistedEvent.Type;
 
+const ProviderRuntimeComposerTextRequestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ComposerTextRequestedType,
+  payload: ComposerTextRequestedPayload,
+});
+export type ProviderRuntimeComposerTextRequestedEvent =
+  typeof ProviderRuntimeComposerTextRequestedEvent.Type;
+
 const ProviderRuntimeToolDeniedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ToolDeniedType,
@@ -1191,6 +1206,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeConfigWarningEvent,
   ProviderRuntimeDeprecationNoticeEvent,
   ProviderRuntimeFilesPersistedEvent,
+  ProviderRuntimeComposerTextRequestedEvent,
   ProviderRuntimeToolDeniedEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,

@@ -158,6 +158,26 @@ describe("ProviderRuntimeEvent", () => {
     expect(approval.payload.supportsAcceptForSession).toBe(false);
   });
 
+  it("decodes transient composer text requests without trimming their text", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "composer.text.requested",
+      eventId: "event-pi-editor-text",
+      provider: "pi",
+      createdAt: "2026-08-23T00:00:02.000Z",
+      threadId: "thread-pi",
+      requestId: "pi-editor-text-1",
+      payload: {
+        text: " Keep this whitespace\n",
+      },
+    });
+
+    expect(parsed.type).toBe("composer.text.requested");
+    if (parsed.type !== "composer.text.requested") {
+      throw new Error("expected composer text request");
+    }
+    expect(parsed.payload.text).toBe(" Keep this whitespace\n");
+  });
+
   it("decodes user-input.resolved with answer map", () => {
     const parsed = decodeRuntimeEvent({
       type: "user-input.resolved",

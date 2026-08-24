@@ -43,6 +43,8 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  type ProviderRuntimeEvent,
+  RuntimeRequestId,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -1408,11 +1410,27 @@ const makeWsRpcLayer = (
                 })),
               );
 
+              const liveComposerTextRequests = providerService.streamEvents.pipe(
+                Stream.filter(
+                  (
+                    event,
+                  ): event is Extract<ProviderRuntimeEvent, { type: "composer.text.requested" }> =>
+                    event.type === "composer.text.requested" && event.threadId === input.threadId,
+                ),
+                Stream.map((event) => ({
+                  kind: "composer-text-requested" as const,
+                  requestId:
+                    event.requestId ?? RuntimeRequestId.make(`composer-text:${event.eventId}`),
+                  text: event.payload.text,
+                })),
+              );
+              const liveThreadStream = Stream.merge(liveStream, liveComposerTextRequests);
+
               // Attach live delivery before reading either replay or snapshot state.
               // Otherwise an event published while the snapshot is loading is lost.
               const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
               yield* Effect.forkScoped(
-                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+                liveThreadStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
               );
               const bufferedLiveStream = Stream.fromQueue(liveBuffer);
 

@@ -553,6 +553,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         case "extension-ui.requested":
           yield* publishInteractionOpened(context, event);
           return;
+        case "editor-text.requested":
+          yield* publish({
+            type: "composer.text.requested",
+            ...(yield* makeStamp()),
+            ...eventBase(context),
+            requestId: RuntimeRequestId.make(event.requestId),
+            payload: { text: event.text },
+          });
+          return;
         case "extension-ui.invalid":
           if (event.requestId !== undefined) {
             yield* context.rpc

@@ -194,6 +194,16 @@ input.on("line", (line) => {
       });
       return;
     }
+    if (command.message === "set-editor-text") {
+      output({
+        type: "extension_ui_request",
+        id: "mock-editor-text",
+        method: "set_editor_text",
+        text: "Voice transcript for correction",
+      });
+      finishRun("editor text requested");
+      return;
+    }
     if (command.message === "timeout") {
       pendingDialogs.set("mock-timeout", "confirm");
       output({

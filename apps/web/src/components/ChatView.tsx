@@ -36,6 +36,7 @@ import {
 import {
   codexFeedbackMessage,
   parseCodexFeedbackCommand,
+  registerThreadClientEffectHandler,
   submitCodexFeedback,
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
@@ -1359,6 +1360,19 @@ function ChatViewContent(props: ChatViewProps) {
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
+
+  useEffect(() => {
+    if (routeKind !== "server") {
+      return;
+    }
+    return registerThreadClientEffectHandler(
+      routeThreadRef.environmentId,
+      routeThreadRef.threadId,
+      (effect) => {
+        setComposerDraftPrompt(routeThreadRef, effect.text);
+      },
+    );
+  }, [routeKind, routeThreadRef.environmentId, routeThreadRef.threadId, setComposerDraftPrompt]);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,

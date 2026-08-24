@@ -25,6 +25,7 @@ const PiWireMessage = Schema.Struct({
   timeout: Schema.optional(Schema.Unknown),
   placeholder: Schema.optional(Schema.Unknown),
   prefill: Schema.optional(Schema.Unknown),
+  text: Schema.optional(Schema.Unknown),
   messages: Schema.optional(Schema.Array(Schema.Unknown)),
   willRetry: Schema.optional(Schema.Boolean),
   usage: Schema.optional(Schema.Unknown),
@@ -90,10 +91,20 @@ const PiExtensionUIDialogRequest = Schema.Union([
   }),
 ]);
 
+const PiExtensionUISetEditorTextRequest = Schema.Struct({
+  type: Schema.Literal("extension_ui_request"),
+  id: Schema.String,
+  method: Schema.Literal("set_editor_text"),
+  text: Schema.String,
+});
+
 const decodeWireLine = Schema.decodeUnknownEffect(Schema.fromJsonString(PiWireMessage));
 const decodeMessageExit = Schema.decodeUnknownExit(PiMessage);
 const decodeToolResultExit = Schema.decodeUnknownExit(PiToolResult);
 const decodeExtensionUIDialogRequestExit = Schema.decodeUnknownExit(PiExtensionUIDialogRequest);
+const decodeExtensionUISetEditorTextRequestExit = Schema.decodeUnknownExit(
+  PiExtensionUISetEditorTextRequest,
+);
 
 export class PiRpcDecodeError extends Schema.TaggedErrorClass<PiRpcDecodeError>()(
   "PiRpcDecodeError",
@@ -185,6 +196,11 @@ export type PiRpcEvent =
       readonly requestId?: string;
       readonly message: string;
     }
+  | {
+      readonly type: "editor-text.requested";
+      readonly requestId: string;
+      readonly text: string;
+    }
   | { readonly type: "runtime.error"; readonly message: string }
   | { readonly type: "runtime.exited"; readonly message: string };
 
@@ -251,7 +267,7 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
     case "tool_execution_end":
       return normalizeToolEnd(message);
     case "extension_ui_request":
-      return normalizeExtensionUIDialogRequest(message);
+      return normalizeExtensionUIRequest(message);
     case "extension_error": {
       const error = typeof message.error === "string" ? message.error.trim() : "";
       return [
@@ -266,7 +282,19 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
   }
 }
 
-function normalizeExtensionUIDialogRequest(message: PiWireMessage): ReadonlyArray<PiRpcEvent> {
+function normalizeExtensionUIRequest(message: PiWireMessage): ReadonlyArray<PiRpcEvent> {
+  if (message.method === "set_editor_text") {
+    const decoded = decodeExtensionUISetEditorTextRequestExit(message);
+    return Exit.isSuccess(decoded)
+      ? [
+          {
+            type: "editor-text.requested",
+            requestId: decoded.value.id,
+            text: decoded.value.text,
+          },
+        ]
+      : [];
+  }
   if (
     message.method !== "select" &&
     message.method !== "confirm" &&

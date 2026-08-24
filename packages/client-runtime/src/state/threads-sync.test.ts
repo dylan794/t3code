@@ -4,6 +4,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
+  RuntimeRequestId,
   ThreadId,
   TurnId,
   type OrchestrationThread,
@@ -33,7 +34,9 @@ import * as RpcSession from "../rpc/session.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
+  ThreadClientEffects,
   ThreadSnapshotLoader,
+  type ThreadClientEffect,
   type EnvironmentThreadState,
 } from "./threads.ts";
 
@@ -144,6 +147,10 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const lastRequestCompletionMarker = yield* Ref.make<boolean | undefined>(undefined);
   const savedThreads = yield* Ref.make<ReadonlyArray<OrchestrationThreadDetailSnapshot>>([]);
   const removedThreads = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+  let resolveClientEffect!: (effect: ThreadClientEffect) => void;
+  const clientEffect = new Promise<ThreadClientEffect>((resolve) => {
+    resolveClientEffect = resolve;
+  });
   const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
   const supervisorState = yield* SubscriptionRef.make<SupervisorConnectionState>(
     AVAILABLE_CONNECTION_STATE,
@@ -226,6 +233,13 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ThreadSnapshotLoader, snapshotLoader),
     Effect.provideService(
+      ThreadClientEffects,
+      ThreadClientEffects.of({
+        register: () => () => {},
+        publish: (_key, effect) => resolveClientEffect(effect),
+      }),
+    ),
+    Effect.provideService(
       ConnectionWakeups.ConnectionWakeups,
       ConnectionWakeups.ConnectionWakeups.of({ changes: Stream.fromQueue(wakeups) }),
     ),
@@ -251,6 +265,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     savedThreads,
     removedThreads,
     wakeups,
+    clientEffect: Effect.promise(() => clientEffect),
     replaceSession: SubscriptionRef.set(
       supervisorSession,
       Option.some(
@@ -366,6 +381,24 @@ describe("EnvironmentThreads", () => {
       expect(Option.getOrThrow(state.data).title).toBe("Live title");
       expect((yield* Ref.get(harness.savedThreads)).at(-1)?.thread.title).toBe("Live title");
       expect((yield* Ref.get(harness.savedThreads)).at(-1)?.snapshotSequence).toBe(2);
+    }),
+  );
+
+  it.effect("delivers composer text requests as client effects without reducing thread data", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD });
+      yield* Queue.offer(harness.inputs, {
+        kind: "composer-text-requested",
+        requestId: RuntimeRequestId.make("editor-text-1"),
+        text: "Voice transcript for correction",
+      });
+
+      expect(yield* harness.clientEffect).toEqual({
+        kind: "composer-text-requested",
+        requestId: "editor-text-1",
+        text: "Voice transcript for correction",
+      });
+      expect(Option.getOrThrow((yield* Ref.get(harness.latest)).data)).toEqual(BASE_THREAD);
     }),
   );
 
