@@ -103,7 +103,11 @@ describe("PiRpcTransport", () => {
       const events = Array.from(yield* Fiber.join(eventsFiber));
       yield* connection.abort();
 
-      expect(state).toEqual({ sessionId: "mock-session", sessionFile: "mock-session.jsonl" });
+      expect(state).toEqual({
+        sessionId: "mock-session",
+        sessionFile: "mock-session.jsonl",
+        isStreaming: false,
+      });
       expect(events).toEqual([
         { type: "run.started" },
         { type: "assistant.started" },
@@ -116,6 +120,43 @@ describe("PiRpcTransport", () => {
         { type: "assistant.completed", stopReason: "stop" },
         { type: "run.ended", willRetry: false },
         { type: "run.settled" },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("records whether a notification preceded its prompt response", () =>
+    Effect.gen(function* () {
+      const connection = yield* makePiRpcConnection({
+        nodePath: process.execPath,
+        piCliPath: mockPeerPath,
+        extensionPath: "ignored-by-mock",
+        cwd: NodePath.dirname(mockPeerPath),
+      });
+
+      const duringFiber = yield* connection.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* connection.prompt("handled-without-run-info");
+      expect(Array.from(yield* Fiber.join(duringFiber))).toEqual([
+        expect.objectContaining({
+          type: "extension-ui.notified",
+          observedDuringPromptRequest: true,
+        }),
+      ]);
+
+      const afterFiber = yield* connection.events.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* connection.prompt("handled-then-notified-delayed-run");
+      expect(Array.from(yield* Fiber.join(afterFiber))).toEqual([
+        expect.objectContaining({
+          type: "extension-ui.notified",
+          observedDuringPromptRequest: false,
+        }),
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );

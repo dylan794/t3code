@@ -193,6 +193,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "deprecation.notice",
   "files.persisted",
   "composer.text.requested",
+  "runtime.info",
   "runtime.warning",
   "runtime.error",
 ]);
@@ -246,6 +247,7 @@ const DeprecationNoticeType = Schema.Literal("deprecation.notice");
 const FilesPersistedType = Schema.Literal("files.persisted");
 const ComposerTextRequestedType = Schema.Literal("composer.text.requested");
 const ToolDeniedType = Schema.Literal("tool.denied");
+const RuntimeInfoType = Schema.Literal("runtime.info");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
@@ -779,6 +781,12 @@ const RuntimeWarningPayload = Schema.Struct({
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
+const RuntimeInfoPayload = Schema.Struct({
+  message: TrimmedNonEmptyStringSchema,
+  detail: Schema.optional(Schema.Unknown),
+});
+export type RuntimeInfoPayload = typeof RuntimeInfoPayload.Type;
+
 const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
@@ -1152,6 +1160,13 @@ const ProviderRuntimeWarningEvent = Schema.Struct({
 });
 export type ProviderRuntimeWarningEvent = typeof ProviderRuntimeWarningEvent.Type;
 
+const ProviderRuntimeInfoEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: RuntimeInfoType,
+  payload: RuntimeInfoPayload,
+});
+export type ProviderRuntimeInfoEvent = typeof ProviderRuntimeInfoEvent.Type;
+
 const ProviderRuntimeErrorEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: RuntimeErrorType,
@@ -1208,6 +1223,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeFilesPersistedEvent,
   ProviderRuntimeComposerTextRequestedEvent,
   ProviderRuntimeToolDeniedEvent,
+  ProviderRuntimeInfoEvent,
   ProviderRuntimeWarningEvent,
   ProviderRuntimeErrorEvent,
 ]);

@@ -20,6 +20,7 @@ const PiWireMessage = Schema.Struct({
   data: Schema.optional(Schema.Unknown),
   error: Schema.optional(Schema.Unknown),
   message: Schema.optional(Schema.Unknown),
+  notifyType: Schema.optional(Schema.Unknown),
   title: Schema.optional(Schema.Unknown),
   options: Schema.optional(Schema.Unknown),
   timeout: Schema.optional(Schema.Unknown),
@@ -98,6 +99,14 @@ const PiExtensionUISetEditorTextRequest = Schema.Struct({
   text: Schema.String,
 });
 
+const PiExtensionUINotification = Schema.Struct({
+  type: Schema.Literal("extension_ui_request"),
+  id: Schema.String,
+  method: Schema.Literal("notify"),
+  message: Schema.String,
+  notifyType: Schema.optional(Schema.Literals(["info", "warning", "error"])),
+});
+
 const decodeWireLine = Schema.decodeUnknownEffect(Schema.fromJsonString(PiWireMessage));
 const decodeMessageExit = Schema.decodeUnknownExit(PiMessage);
 const decodeToolResultExit = Schema.decodeUnknownExit(PiToolResult);
@@ -105,6 +114,7 @@ const decodeExtensionUIDialogRequestExit = Schema.decodeUnknownExit(PiExtensionU
 const decodeExtensionUISetEditorTextRequestExit = Schema.decodeUnknownExit(
   PiExtensionUISetEditorTextRequest,
 );
+const decodeExtensionUINotificationExit = Schema.decodeUnknownExit(PiExtensionUINotification);
 
 export class PiRpcDecodeError extends Schema.TaggedErrorClass<PiRpcDecodeError>()(
   "PiRpcDecodeError",
@@ -201,6 +211,13 @@ export type PiRpcEvent =
       readonly requestId: string;
       readonly text: string;
     }
+  | {
+      readonly type: "extension-ui.notified";
+      readonly requestId: string;
+      readonly message: string;
+      readonly level: "info" | "warning" | "error";
+      readonly observedDuringPromptRequest?: boolean;
+    }
   | { readonly type: "runtime.error"; readonly message: string }
   | { readonly type: "runtime.exited"; readonly message: string };
 
@@ -283,6 +300,19 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
 }
 
 function normalizeExtensionUIRequest(message: PiWireMessage): ReadonlyArray<PiRpcEvent> {
+  if (message.method === "notify") {
+    const decoded = decodeExtensionUINotificationExit(message);
+    return Exit.isSuccess(decoded)
+      ? [
+          {
+            type: "extension-ui.notified",
+            requestId: decoded.value.id,
+            message: decoded.value.message,
+            level: decoded.value.notifyType ?? "info",
+          },
+        ]
+      : [];
+  }
   if (message.method === "set_editor_text") {
     const decoded = decodeExtensionUISetEditorTextRequestExit(message);
     return Exit.isSuccess(decoded)

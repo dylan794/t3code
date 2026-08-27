@@ -200,6 +200,7 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
     new Map<string, Deferred.Deferred<PiRpcResponse, PiRpcTransportError>>(),
   );
   const requestSequence = yield* Ref.make(0);
+  const pendingPromptIds = yield* Ref.make(new Set<string>());
   const active = yield* Ref.make(true);
   const stderr = yield* Ref.make("");
   const writeMutex = yield* Semaphore.make(1);
@@ -261,9 +262,14 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
 
     const response = responseFromPiWireMessage(decoded.value);
     if (response) {
-      const deferred = yield* takePending(
-        response._tag === "success" ? response.response.id : response.id,
-      );
+      const responseId = response._tag === "success" ? response.response.id : response.id;
+      yield* Ref.update(pendingPromptIds, (ids) => {
+        if (!ids.has(responseId)) return ids;
+        const next = new Set(ids);
+        next.delete(responseId);
+        return next;
+      });
+      const deferred = yield* takePending(responseId);
       if (Option.isNone(deferred)) return;
       if (response._tag === "success") {
         yield* Deferred.succeed(deferred.value, response.response);
@@ -295,10 +301,18 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
 
     yield* Effect.forEach(
       normalizePiRpcEvent(decoded.value),
-      (event) => Queue.offer(events, event),
-      {
-        discard: true,
-      },
+      (event) =>
+        event.type === "extension-ui.notified"
+          ? Ref.get(pendingPromptIds).pipe(
+              Effect.flatMap((ids) =>
+                Queue.offer(events, {
+                  ...event,
+                  observedDuringPromptRequest: ids.size > 0,
+                }),
+              ),
+            )
+          : Queue.offer(events, event),
+      { discard: true },
     );
   });
 
@@ -369,6 +383,9 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
 
     const id = `t3-pi-${yield* Ref.updateAndGet(requestSequence, (value) => value + 1)}`;
     const deferred = yield* Deferred.make<PiRpcResponse, PiRpcTransportError>();
+    if (rpcCommand.type === "prompt") {
+      yield* Ref.update(pendingPromptIds, (ids) => new Set(ids).add(id));
+    }
     yield* Ref.update(pending, (requests) => {
       const next = new Map(requests);
       next.set(id, deferred);
@@ -399,7 +416,19 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
           ),
         ),
       )
-      .pipe(Effect.tapError(() => takePending(id)));
+      .pipe(
+        Effect.tapError(() =>
+          Effect.all([
+            takePending(id),
+            Ref.update(pendingPromptIds, (ids) => {
+              if (!ids.has(id)) return ids;
+              const next = new Set(ids);
+              next.delete(id);
+              return next;
+            }),
+          ]),
+        ),
+      );
 
     const response = yield* Deferred.await(deferred).pipe(Effect.ensuring(takePending(id)));
     if (response.command !== rpcCommand.type) {

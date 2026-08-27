@@ -49,6 +49,298 @@ function makeFakeJarvisRoot(): string {
 }
 
 describe("PiAdapter", () => {
+  it.effect("fails a prompt that Pi handles without starting a run and releases the session", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-handled-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const failedEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const failedTurn = yield* adapter.sendTurn({ threadId, input: "handled-without-run" });
+      const failedEvents = Array.from(
+        yield* Fiber.join(failedEventsFiber).pipe(Effect.timeout("2 seconds")),
+      );
+      expect(failedEvents).toContainEqual(
+        expect.objectContaining({
+          type: "runtime.warning",
+          turnId: failedTurn.turnId,
+          payload: {
+            message:
+              "T3 cannot unlock Jarvis in this release. Secret input is not implemented yet.",
+          },
+        }),
+      );
+      expect(failedEvents.filter((event) => event.type === "runtime.warning")).toHaveLength(1);
+      expect(failedEvents).not.toContainEqual(expect.objectContaining({ type: "runtime.error" }));
+      expect(failedEvents.at(-1)).toMatchObject({
+        type: "turn.completed",
+        turnId: failedTurn.turnId,
+        payload: { state: "failed", stopReason: "blocked" },
+      });
+
+      const recoveredEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const recoveredTurn = yield* adapter.sendTurn({ threadId, input: "hello" });
+      const recoveredEvents = Array.from(
+        yield* Fiber.join(recoveredEventsFiber).pipe(Effect.timeout("2 seconds")),
+      );
+      expect(recoveredEvents.at(-1)).toMatchObject({
+        type: "turn.completed",
+        turnId: recoveredTurn.turnId,
+        payload: { state: "completed" },
+      });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("completes a handled info notification without duplicating it as an error", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-handled-info-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const turn = yield* adapter.sendTurn({ threadId, input: "handled-without-run-info" });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+
+      expect(events.filter((event) => event.type === "runtime.info")).toHaveLength(1);
+      expect(events).not.toContainEqual(expect.objectContaining({ type: "runtime.warning" }));
+      expect(events).not.toContainEqual(expect.objectContaining({ type: "runtime.error" }));
+      expect(events.at(-1)).toMatchObject({
+        type: "turn.completed",
+        turnId: turn.turnId,
+        payload: { state: "completed" },
+      });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps ownership when a nested Pi run starts after prompt acknowledgement", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-delayed-run-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const turn = yield* adapter.sendTurn({ threadId, input: "handled-then-delayed-run" });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          turnId: turn.turnId,
+          payload: expect.objectContaining({ delta: "delayed reply" }),
+        }),
+      );
+      expect(events.at(-1)).toMatchObject({ type: "turn.completed", turnId: turn.turnId });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps delayed-run ownership when a notification follows prompt acknowledgement", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-notified-delayed-run-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "handled-then-notified-delayed-run",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "runtime.info",
+          turnId: turn.turnId,
+          payload: { message: "Jarvis queued the nested run." },
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          turnId: turn.turnId,
+          payload: expect.objectContaining({ delta: "delayed reply after notification" }),
+        }),
+      );
+      expect(events.at(-1)).toMatchObject({ type: "turn.completed", turnId: turn.turnId });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("clears prompt failure state so a later turn can recover", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-prompt-failure-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const failure = yield* Effect.flip(adapter.sendTurn({ threadId, input: "reject-prompt" }));
+      expect(failure).toMatchObject({
+        _tag: "ProviderAdapterRequestError",
+        method: "prompt",
+        detail: "mock prompt failed",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const recoveredTurn = yield* adapter.sendTurn({ threadId, input: "hello" });
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+      expect(events.at(-1)).toMatchObject({ type: "turn.completed", turnId: recoveredTurn.turnId });
+      expect((yield* adapter.listSessions())[0]).not.toHaveProperty("lastError");
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("retains interrupted ownership until a delayed Pi run settles", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("pi-test"),
+      });
+      const threadId = ThreadId.make("pi-handled-interrupt-thread");
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) => event.type === "session.state.changed" && event.payload.state === "ready",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const interruptedTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "handled-then-delayed-run",
+      });
+      yield* adapter.interruptTurn(threadId, interruptedTurn.turnId);
+
+      const replacementFailure = yield* Effect.flip(adapter.sendTurn({ threadId, input: "hello" }));
+      expect(replacementFailure).toMatchObject({
+        _tag: "ProviderAdapterValidationError",
+        issue: "Pi is already processing a turn. Interrupt it before starting another.",
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("2 seconds")));
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "turn.aborted", turnId: interruptedTurn.turnId }),
+      );
+      expect(events).not.toContainEqual(
+        expect.objectContaining({
+          type: "content.delta",
+          payload: expect.objectContaining({ delta: "delayed reply" }),
+        }),
+      );
+
+      const recoveredEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      const recoveredTurn = yield* adapter.sendTurn({ threadId, input: "hello" });
+      const recoveredEvents = Array.from(
+        yield* Fiber.join(recoveredEventsFiber).pipe(Effect.timeout("2 seconds")),
+      );
+      expect(recoveredEvents.at(-1)).toMatchObject({
+        type: "turn.completed",
+        turnId: recoveredTurn.turnId,
+      });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("starts Jarvis, streams a turn, and interrupts only its scoped Pi process", () =>
     Effect.gen(function* () {
       const jarvisRoot = makeFakeJarvisRoot();

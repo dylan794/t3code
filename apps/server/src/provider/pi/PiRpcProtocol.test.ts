@@ -181,9 +181,16 @@ describe("PiRpcProtocol", () => {
       ]);
 
       const notification = yield* decode(
-        '{"type":"extension_ui_request","id":"notify-1","method":"notify","message":"Done"}',
+        '{"type":"extension_ui_request","id":"notify-1","method":"notify","message":"Authentication blocked","notifyType":"warning"}',
       );
-      expect(normalizePiRpcEvent(notification)).toEqual([]);
+      expect(normalizePiRpcEvent(notification)).toEqual([
+        {
+          type: "extension-ui.notified",
+          requestId: "notify-1",
+          message: "Authentication blocked",
+          level: "warning",
+        },
+      ]);
     }),
   );
 

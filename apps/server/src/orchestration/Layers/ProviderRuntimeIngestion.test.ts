@@ -2743,6 +2743,7 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
 
     expect(activity?.kind).toBe("runtime.error");
+    expect(activity?.summary).toBe("runtime activity exploded");
     expect(activityPayload?.message).toBe("runtime activity exploded");
   });
 
@@ -2788,6 +2789,36 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("running");
     expect(thread.session?.activeTurnId).toBe("turn-warning");
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("projects runtime.info without warning or error presentation", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "runtime.info",
+      eventId: asEventId("evt-runtime-info"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-info"),
+      payload: { message: "Jarvis authentication is already active." },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some((activity) => activity.id === "evt-runtime-info"),
+    );
+    const activity = thread.activities.find(
+      (entry: ProviderRuntimeTestActivity) => entry.id === "evt-runtime-info",
+    );
+
+    expect(activity).toMatchObject({
+      kind: "runtime.info",
+      tone: "info",
+      summary: "Jarvis authentication is already active.",
+    });
+    expect(activity?.kind).not.toBe("runtime.warning");
+    expect(activity?.kind).not.toBe("runtime.error");
   });
 
   it("maps session/thread lifecycle and item.started into session/activity projections", async () => {

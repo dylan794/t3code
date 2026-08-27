@@ -103,6 +103,13 @@ interface PiPendingInteraction {
   readonly turnId?: TurnId;
 }
 
+type PiTurnNotificationLevel = "info" | "warning" | "error";
+
+interface PiTurnNotification {
+  readonly message: string;
+  readonly level: PiTurnNotificationLevel;
+}
+
 interface PiSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
@@ -113,6 +120,9 @@ interface PiSessionContext {
   activeTurnId: TurnId | undefined;
   assistantItemId: RuntimeItemId | undefined;
   assistantStopReason: string | undefined;
+  lastTurnNotification: PiTurnNotification | undefined;
+  promptReturned: boolean;
+  runStarted: boolean;
   interrupted: boolean;
   stopped: boolean;
 }
@@ -279,14 +289,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   const clearPendingInteractions = Effect.fn("PiAdapter.clearPendingInteractions")(function* (
     context: PiSessionContext,
-    reason: "interrupt" | "settled" | "stop" | "exit",
+    reason: "interrupt" | "settled" | "stop" | "exit" | "prompt-failed",
   ) {
     yield* context.interactionMutex.withPermits(1)(
       Effect.gen(function* () {
         const pendingInteractions = [...context.pendingInteractions.values()];
         context.pendingInteractions.clear();
         for (const pending of pendingInteractions) {
-          if (reason === "interrupt" || reason === "stop") {
+          if (reason === "interrupt" || reason === "stop" || reason === "prompt-failed") {
             yield* context.rpc
               .respondToExtensionUI({
                 type: "extension_ui_response",
@@ -411,11 +421,122 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
   });
 
+  const settleHandledTurn = Effect.fn("PiAdapter.settleHandledTurn")(function* (
+    context: PiSessionContext,
+    turnId: TurnId,
+  ) {
+    const notification = context.lastTurnNotification;
+    if (
+      context.activeTurnId !== turnId ||
+      context.runStarted ||
+      !context.promptReturned ||
+      !notification
+    )
+      return;
+    yield* clearPendingInteractions(context, "settled");
+    const interrupted = context.interrupted;
+    context.activeTurnId = undefined;
+    context.assistantItemId = undefined;
+    context.assistantStopReason = undefined;
+    context.lastTurnNotification = undefined;
+    context.promptReturned = false;
+    context.runStarted = false;
+    context.interrupted = false;
+    const { lastError: _lastError, ...sessionWithoutLastError } = context.session;
+    context.session = {
+      ...sessionWithoutLastError,
+      status: "ready",
+      activeTurnId: undefined,
+      updatedAt: yield* nowIso,
+    };
+    if (!interrupted) {
+      yield* publish({
+        type: "turn.completed",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        turnId,
+        payload: {
+          state: notification.level === "info" ? "completed" : "failed",
+          stopReason:
+            notification.level === "info"
+              ? null
+              : notification.level === "warning"
+                ? "blocked"
+                : "error",
+        },
+      });
+    }
+    yield* publish({
+      type: "session.state.changed",
+      ...(yield* makeStamp()),
+      ...eventBase(context),
+      payload: {
+        state: "ready",
+        reason: interrupted
+          ? "Interrupted before Pi started a run"
+          : "Pi handled the prompt without starting a run",
+      },
+    });
+  });
+
+  const resetFailedPrompt = Effect.fn("PiAdapter.resetFailedPrompt")(function* (
+    context: PiSessionContext,
+    turnId: TurnId,
+    detail: string,
+  ) {
+    if (context.activeTurnId !== turnId) return;
+    yield* clearPendingInteractions(context, "prompt-failed");
+    context.activeTurnId = undefined;
+    context.assistantItemId = undefined;
+    context.assistantStopReason = undefined;
+    context.lastTurnNotification = undefined;
+    context.promptReturned = false;
+    context.runStarted = false;
+    context.interrupted = false;
+    context.session = {
+      ...context.session,
+      status: "ready",
+      activeTurnId: undefined,
+      lastError: detail,
+      updatedAt: yield* nowIso,
+    };
+    yield* publish({
+      type: "turn.aborted",
+      ...(yield* makeStamp()),
+      ...eventBase(context),
+      turnId,
+      payload: { reason: detail },
+    });
+    yield* publish({
+      type: "session.state.changed",
+      ...(yield* makeStamp()),
+      ...eventBase(context),
+      payload: { state: "ready", reason: "Pi prompt failed" },
+    });
+  });
+
   const handlePiEvent = (context: PiSessionContext, event: PiRpcEvent) =>
     Effect.gen(function* () {
       const turnId = context.activeTurnId;
       switch (event.type) {
         case "run.started":
+          if (turnId) {
+            context.runStarted = true;
+            if (context.interrupted) {
+              yield* context.rpc.abort().pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "abort",
+                      detail: cause.detail,
+                      cause,
+                    }),
+                ),
+              );
+              return;
+            }
+          }
           context.session = {
             ...context.session,
             status: "running",
@@ -438,9 +559,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           context.activeTurnId = undefined;
           context.assistantItemId = undefined;
           context.assistantStopReason = undefined;
+          context.lastTurnNotification = undefined;
+          context.promptReturned = false;
+          context.runStarted = false;
           context.interrupted = false;
+          const { lastError: _lastError, ...sessionWithoutLastError } = context.session;
           context.session = {
-            ...context.session,
+            ...sessionWithoutLastError,
             status: "ready",
             activeTurnId: undefined,
             updatedAt: yield* nowIso,
@@ -466,7 +591,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           return;
         }
         case "assistant.started": {
-          if (!turnId) return;
+          if (!turnId || context.interrupted) return;
           const itemId = RuntimeItemId.make(`${turnId}:assistant`);
           context.assistantItemId = itemId;
           yield* publish({
@@ -480,7 +605,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           return;
         }
         case "assistant.delta":
-          if (!turnId || !context.assistantItemId) return;
+          if (context.interrupted || !turnId || !context.assistantItemId) return;
           yield* publish({
             type: "content.delta",
             ...(yield* makeStamp()),
@@ -495,6 +620,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           });
           return;
         case "assistant.completed":
+          if (context.interrupted) return;
           context.assistantStopReason = event.stopReason;
           if (!turnId || !context.assistantItemId) return;
           yield* publish({
@@ -511,7 +637,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           });
           return;
         case "tool.started": {
-          if (!turnId) return;
+          if (!turnId || context.interrupted) return;
           const itemId = RuntimeItemId.make(event.toolCallId);
           yield* publish({
             type: "item.started",
@@ -531,7 +657,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         }
         case "tool.updated":
         case "tool.completed": {
-          if (!turnId) return;
+          if (!turnId || context.interrupted) return;
           const completed = event.type === "tool.completed";
           yield* publish({
             type: completed ? "item.completed" : "item.updated",
@@ -554,6 +680,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           yield* publishInteractionOpened(context, event);
           return;
         case "editor-text.requested":
+          if (context.interrupted) return;
           yield* publish({
             type: "composer.text.requested",
             ...(yield* makeStamp()),
@@ -561,6 +688,39 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             requestId: RuntimeRequestId.make(event.requestId),
             payload: { text: event.text },
           });
+          return;
+        case "extension-ui.notified":
+          if (turnId && event.observedDuringPromptRequest === true) {
+            context.lastTurnNotification = { message: event.message, level: event.level };
+          }
+          if (event.level === "error") {
+            yield* publish({
+              type: "runtime.error",
+              ...(yield* makeStamp()),
+              ...eventBase(context),
+              ...(turnId ? { turnId } : {}),
+              payload: { message: event.message, class: "provider_error" },
+            });
+          } else if (event.level === "warning") {
+            yield* publish({
+              type: "runtime.warning",
+              ...(yield* makeStamp()),
+              ...eventBase(context),
+              ...(turnId ? { turnId } : {}),
+              payload: { message: event.message },
+            });
+          } else {
+            yield* publish({
+              type: "runtime.info",
+              ...(yield* makeStamp()),
+              ...eventBase(context),
+              ...(turnId ? { turnId } : {}),
+              payload: { message: event.message },
+            });
+          }
+          if (turnId && event.observedDuringPromptRequest === true) {
+            yield* settleHandledTurn(context, turnId);
+          }
           return;
         case "extension-ui.invalid":
           if (event.requestId !== undefined) {
@@ -791,6 +951,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         activeTurnId: undefined,
         assistantItemId: undefined,
         assistantStopReason: undefined,
+        lastTurnNotification: undefined,
+        promptReturned: false,
+        runStarted: false,
         interrupted: false,
         stopped: false,
       };
@@ -871,6 +1034,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       }
       const turnId = TurnId.make(yield* nextId);
       context.activeTurnId = turnId;
+      context.lastTurnNotification = undefined;
+      context.promptReturned = false;
+      context.runStarted = false;
       context.interrupted = false;
       context.session = {
         ...context.session,
@@ -897,7 +1063,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
               cause,
             }),
         ),
+        Effect.tapError((requestError) => resetFailedPrompt(context, turnId, requestError.detail)),
       );
+      if (context.activeTurnId === turnId) {
+        context.promptReturned = true;
+        yield* settleHandledTurn(context, turnId);
+      }
       return {
         threadId: input.threadId,
         turnId,

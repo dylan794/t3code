@@ -7,6 +7,7 @@ let currentSessionFile = "mock-session.jsonl";
 let currentSessionId = "mock-session";
 let forkSequence = 0;
 let forkMessages = [];
+let isStreaming = false;
 
 const finishRun = (text) => {
   output({ type: "message_start", message: { role: "assistant" } });
@@ -16,6 +17,7 @@ const finishRun = (text) => {
   });
   output({ type: "message_end", message: { role: "assistant", stopReason: "stop" } });
   output({ type: "agent_end", messages: [], willRetry: false });
+  isStreaming = false;
   output({ type: "agent_settled" });
 };
 
@@ -44,7 +46,7 @@ input.on("line", (line) => {
       type: "response",
       command: "get_state",
       success: true,
-      data: { sessionId: currentSessionId, sessionFile: currentSessionFile },
+      data: { sessionId: currentSessionId, sessionFile: currentSessionFile, isStreaming },
     });
     return;
   }
@@ -109,6 +111,84 @@ input.on("line", (line) => {
       entryId: `mock-entry-${forkMessages.length + 1}`,
       text: command.message,
     });
+    if (command.message === "handled-without-run") {
+      output({
+        type: "extension_ui_request",
+        id: "mock-auth-warning",
+        method: "notify",
+        message: "T3 cannot unlock Jarvis in this release. Secret input is not implemented yet.",
+        notifyType: "warning",
+      });
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      return;
+    }
+    if (command.message === "handled-without-run-info") {
+      output({
+        type: "extension_ui_request",
+        id: "mock-auth-info",
+        method: "notify",
+        message: "Jarvis authentication is already active.",
+        notifyType: "info",
+      });
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      return;
+    }
+    if (command.message === "handled-without-run-slow") {
+      output({
+        type: "extension_ui_request",
+        id: "mock-auth-warning-slow",
+        method: "notify",
+        message: "T3 cannot unlock Jarvis in this release. Secret input is not implemented yet.",
+        notifyType: "warning",
+      });
+      setTimeout(
+        () => output({ id: command.id, type: "response", command: "prompt", success: true }),
+        50,
+      );
+      return;
+    }
+    if (command.message === "handled-then-delayed-run") {
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      setTimeout(() => {
+        isStreaming = true;
+        output({ type: "agent_start" });
+        setTimeout(() => {
+          if (isStreaming) finishRun("delayed reply");
+        }, 10);
+      }, 25);
+      return;
+    }
+    if (command.message === "handled-then-notified-delayed-run") {
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      setTimeout(() => {
+        output({
+          type: "extension_ui_request",
+          id: "mock-delayed-info",
+          method: "notify",
+          message: "Jarvis queued the nested run.",
+          notifyType: "info",
+        });
+      }, 5);
+      setTimeout(() => {
+        isStreaming = true;
+        output({ type: "agent_start" });
+        setTimeout(() => {
+          if (isStreaming) finishRun("delayed reply after notification");
+        }, 10);
+      }, 25);
+      return;
+    }
+    if (command.message === "reject-prompt") {
+      output({
+        id: command.id,
+        type: "response",
+        command: "prompt",
+        success: false,
+        error: "mock prompt failed",
+      });
+      return;
+    }
+    isStreaming = true;
     output({ id: command.id, type: "response", command: "prompt", success: true });
     output({ type: "agent_start" });
     if (command.message === "wait") return;
@@ -226,6 +306,7 @@ input.on("line", (line) => {
   }
   if (command.type === "abort") {
     output({ id: command.id, type: "response", command: "abort", success: true });
+    if (!isStreaming) return;
     output({ type: "message_end", message: { role: "assistant", stopReason: "aborted" } });
     output({ type: "agent_end", messages: [], willRetry: false });
     output({ type: "agent_settled" });
