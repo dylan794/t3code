@@ -57,9 +57,10 @@ full rollback.
 
 Metadata child processes have a three-minute deadline and are killed when they time out. Invalid
 JSON, invalid schema output, provider errors, missing runtime files, and nonzero exits return typed
-text-generation errors. The live Pi integration test uses a disposable profile and local model
-endpoint to verify metadata generation, native rollback, process restart, session resume, and a
-successful follow-up turn without reading or writing T3's installed application data.
+text-generation errors. The live Pi integration test uses a disposable Pi profile, Jarvis
+configuration root, and local model endpoint to verify metadata generation, native rollback,
+process restart, session resume, and a successful follow-up turn without reading or writing T3's
+installed application data or the user's Jarvis authentication state.
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in

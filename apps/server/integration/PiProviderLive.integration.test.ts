@@ -150,11 +150,17 @@ describe("Pi provider live integration", () => {
           ({ close }) => Effect.promise(close).pipe(Effect.ignore),
         );
         const profileDir = NodePath.join(tempRoot, "pi-profile");
+        const jarvisConfigDir = NodePath.join(tempRoot, "jarvis-config");
         const workspace = NodePath.join(tempRoot, "workspace");
         NodeFS.mkdirSync(workspace, { recursive: true });
         writeLocalPiProfile(profileDir, runningEndpoint.endpoint.baseUrl);
 
-        const environment = { ...process.env, PI_CODING_AGENT_DIR: profileDir };
+        const environment = {
+          ...process.env,
+          PI_CODING_AGENT_DIR: profileDir,
+          LOCALAPPDATA: jarvisConfigDir,
+          XDG_CONFIG_HOME: jarvisConfigDir,
+        };
         const settings = decodeSettings({
           jarvisProjectPath: JARVIS_ROOT,
           launchArgs:
