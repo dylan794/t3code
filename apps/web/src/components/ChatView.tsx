@@ -93,7 +93,9 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
+  deriveOwnerThreadConcealed,
   derivePendingApprovals,
+  derivePendingSecretInputs,
   derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntries,
@@ -106,6 +108,7 @@ import {
   isLatestTurnSettled,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
+import { OwnerSecretPrompt } from "./chat/OwnerSecretPrompt";
 import { getAnchoredTurnMetrics, type TimelineScrollMode } from "./chat/timelineScrollAnchoring";
 import {
   buildPendingUserInputAnswers,
@@ -1289,6 +1292,9 @@ function ChatViewContent(props: ChatViewProps) {
   const respondToThreadUserInput = useAtomCommand(threadEnvironment.respondToUserInput, {
     reportFailure: false,
   });
+  const respondToSecretInput = useAtomCommand(threadEnvironment.respondToSecretInput, {
+    reportFailure: false,
+  });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
   });
@@ -2322,6 +2328,15 @@ function ChatViewContent(props: ChatViewProps) {
     () => derivePendingUserInputs(threadActivities),
     [threadActivities],
   );
+  const ownerThreadConcealed = useMemo(
+    () => deriveOwnerThreadConcealed(threadActivities),
+    [threadActivities],
+  );
+  const pendingSecretInputs = useMemo(
+    () => derivePendingSecretInputs(threadActivities),
+    [threadActivities],
+  );
+  const activeSecretInput = pendingSecretInputs[0];
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
     () =>
@@ -2667,13 +2682,15 @@ function ChatViewContent(props: ChatViewProps) {
   ]);
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(
-        timelineMessages,
-        activeThread?.proposedPlans ?? [],
-        workLogEntries,
-        turnPlans,
-      ),
-    [activeThread?.proposedPlans, timelineMessages, turnPlans, workLogEntries],
+      ownerThreadConcealed
+        ? []
+        : deriveTimelineEntries(
+            timelineMessages,
+            activeThread?.proposedPlans ?? [],
+            workLogEntries,
+            turnPlans,
+          ),
+    [activeThread?.proposedPlans, ownerThreadConcealed, timelineMessages, turnPlans, workLogEntries],
   );
   const [dockedDraftHeroThreadKey, setDockedDraftHeroThreadKey] = useState<string | null>(null);
   const draftHeroDockRequested =
@@ -5807,6 +5824,30 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThreadId, environmentId, respondToThreadApproval, setThreadError],
   );
 
+  const onRespondToSecretInput = useCallback(
+    async (requestId: ApprovalRequestId, secret: string) => {
+      if (!activeThreadId) return;
+      const result = await respondToSecretInput({
+        environmentId,
+        input: { threadId: activeThreadId, requestId, secret },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        setThreadError(activeThreadId, "Secret input was not accepted.");
+      }
+    },
+    [activeThreadId, environmentId, respondToSecretInput, setThreadError],
+  );
+  const onCancelSecretInput = useCallback(
+    async (requestId: ApprovalRequestId) => {
+      if (!activeThreadId) return;
+      await respondToSecretInput({
+        environmentId,
+        input: { threadId: activeThreadId, requestId, cancelled: true },
+      });
+    },
+    [activeThreadId, environmentId, respondToSecretInput],
+  );
+
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>, cancelled?: boolean) => {
       if (!activeThreadId) return;
@@ -6680,7 +6721,23 @@ function ChatViewContent(props: ChatViewProps) {
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
-              <MessagesTimeline
+              {ownerThreadConcealed ? (
+              <div
+                role="status"
+                className="border-b border-border px-4 py-3 text-sm text-muted-foreground"
+                data-owner-thread-concealed="true"
+              >
+                Jarvis is locked. The Owner thread is hidden until you unlock.
+              </div>
+            ) : null}
+            {activeSecretInput ? (
+              <OwnerSecretPrompt
+                prompt={activeSecretInput}
+                onSubmit={onRespondToSecretInput}
+                onCancel={onCancelSecretInput}
+              />
+            ) : null}
+            <MessagesTimeline
                 agentPanelModel={agentPanelModel}
                 onOpenAgents={addAgentsSurface}
                 key={activeThread.id}

@@ -15,6 +15,7 @@ import {
   ThreadId,
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
+  ProviderRespondToSecretInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
@@ -48,7 +49,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderAdapterRequestError,
+  ProviderValidationError,
+} from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
@@ -945,6 +950,32 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const respondToSecretInput: ProviderServiceMethod<"respondToSecretInput"> = Effect.fn(
+    "respondToSecretInput",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.respondToSecretInput",
+      schema: ProviderRespondToSecretInput,
+      payload: rawInput,
+    });
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.respondToSecretInput",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.respondToSecretInput) {
+      return yield* new ProviderAdapterRequestError({
+        provider: routed.adapter.provider,
+        method: "extension_ui_response",
+        detail: "This provider cannot collect an ephemeral secret.",
+      });
+    }
+    yield* routed.adapter.respondToSecretInput(routed.threadId, input.requestId, {
+      ...(input.cancelled !== undefined ? { cancelled: input.cancelled } : {}),
+      ...(input.secret !== undefined ? { secret: input.secret } : {}),
+    });
+  });
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -1247,6 +1278,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondToSecretInput,
     stopSession,
     listSessions,
     getCapabilities,

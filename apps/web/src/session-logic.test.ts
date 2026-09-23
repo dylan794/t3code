@@ -12,7 +12,9 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveTurnPlans,
+  deriveOwnerThreadConcealed,
   derivePendingApprovals,
+  derivePendingSecretInputs,
   derivePendingUserInputs,
   deriveTimelineEntries,
   deriveWorkLogEntries,
@@ -2266,5 +2268,63 @@ describe("rerun workflows", () => {
     const spawnRows = entries.filter((entry) => entry.agentSpawn !== undefined);
     expect(spawnRows.map((row) => row.agentSpawn!.workflowId)).toEqual(["wf-run1", "wf-run2"]);
     expect(spawnRows.map((row) => row.turnId)).toEqual(["turn-1", "turn-2"]);
+  });
+});
+
+describe("owner thread concealment", () => {
+  it("hides the thread only while the latest concealment record says so", () => {
+    const activities = [
+      makeActivity({
+        kind: "owner-thread.concealed",
+        summary: "Owner thread hidden",
+        payload: { concealed: true },
+        createdAt: "2026-02-23T00:00:01.000Z",
+      }),
+      makeActivity({
+        kind: "owner-thread.concealed",
+        summary: "Owner thread restored",
+        payload: { concealed: false },
+        createdAt: "2026-02-23T00:00:02.000Z",
+      }),
+    ];
+    expect(deriveOwnerThreadConcealed(activities)).toBe(false);
+    expect(
+      deriveOwnerThreadConcealed([
+        ...activities,
+        makeActivity({
+          kind: "owner-thread.concealed",
+          summary: "Owner thread hidden",
+          payload: { concealed: true },
+          createdAt: "2026-02-23T00:00:03.000Z",
+        }),
+      ]),
+    ).toBe(true);
+  });
+
+  it("tracks a secret prompt without keeping a resolved secret", () => {
+    const open = makeActivity({
+      kind: "secret-input.requested",
+      summary: "Masked secret input requested",
+      payload: { requestId: "req-secret-1", title: "Owner password" },
+      createdAt: "2026-02-23T00:00:01.000Z",
+    });
+    expect(derivePendingSecretInputs([open])).toEqual([
+      {
+        requestId: "req-secret-1",
+        title: "Owner password",
+        createdAt: "2026-02-23T00:00:01.000Z",
+      },
+    ]);
+    expect(
+      derivePendingSecretInputs([
+        open,
+        makeActivity({
+          kind: "secret-input.resolved",
+          summary: "Secret input submitted",
+          payload: { requestId: "req-secret-1", cancelled: false },
+          createdAt: "2026-02-23T00:00:02.000Z",
+        }),
+      ]),
+    ).toEqual([]);
   });
 });

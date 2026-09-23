@@ -566,6 +566,57 @@ export function runtimeEventToActivities(
       ];
     }
 
+    case "secret-input.requested": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "secret-input.requested",
+          summary: "Masked secret input requested",
+          payload: {
+            ...(event.requestId ? { requestId: event.requestId } : {}),
+            title: event.payload.title,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "secret-input.resolved": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "secret-input.resolved",
+          summary: event.payload.cancelled ? "Secret input cancelled" : "Secret input submitted",
+          payload: {
+            ...(event.requestId ? { requestId: event.requestId } : {}),
+            cancelled: event.payload.cancelled,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "owner-thread.concealed": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "owner-thread.concealed",
+          summary: event.payload.concealed ? "Owner thread hidden" : "Owner thread restored",
+          payload: { concealed: event.payload.concealed },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "task.started": {
       return [
         {

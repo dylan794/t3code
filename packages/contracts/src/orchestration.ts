@@ -27,6 +27,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  respondToSecretInput: "orchestration.respondToSecretInput",
   getWorkflowScript: "orchestration.getWorkflowScript",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",

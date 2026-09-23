@@ -98,8 +98,17 @@ interface PiTurnSnapshot {
 
 type PiExtensionUIRequest = Extract<PiRpcEvent, { readonly type: "extension-ui.requested" }>;
 
+type PiPendingRequest =
+  | PiExtensionUIRequest
+  | {
+      readonly type: "extension-ui.requested";
+      readonly requestId: string;
+      readonly method: "secret_input";
+      readonly title: string;
+    };
+
 interface PiPendingInteraction {
-  readonly request: PiExtensionUIRequest;
+  readonly request: PiPendingRequest;
   readonly turnId?: TurnId;
 }
 
@@ -125,6 +134,7 @@ interface PiSessionContext {
   runStarted: boolean;
   interrupted: boolean;
   stopped: boolean;
+  ownerThreadConcealed: boolean;
 }
 
 export interface PiAdapterOptions {
@@ -232,12 +242,24 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     pending: PiPendingInteraction,
     resolution:
       | { readonly kind: "approval"; readonly decision: string }
+      | { readonly kind: "secret-input"; readonly cancelled: boolean }
       | {
           readonly kind: "user-input";
           readonly answers: Record<string, unknown>;
           readonly cancelled?: boolean;
         },
   ) {
+    if (resolution.kind === "secret-input") {
+      yield* publish({
+        type: "secret-input.resolved",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        requestId: interactionRequestId(pending.request.requestId),
+        payload: { cancelled: resolution.cancelled },
+      });
+      return;
+    }
     if (resolution.kind === "approval") {
       yield* publish({
         type: "request.resolved",
@@ -281,7 +303,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           pending,
           pending.request.method === "confirm"
             ? { kind: "approval", decision: reason === "timeout" ? "decline" : "cancel" }
-            : { kind: "user-input", answers: {}, cancelled: true },
+            : pending.request.method === "secret_input"
+              ? { kind: "secret-input", cancelled: true }
+              : { kind: "user-input", answers: {}, cancelled: true },
         );
       }),
     );
@@ -326,11 +350,49 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
                       ? "decline"
                       : "cancel",
                 }
-              : { kind: "user-input", answers: {}, cancelled: true },
+              : pending.request.method === "secret_input"
+                ? { kind: "secret-input", cancelled: true }
+                : { kind: "user-input", answers: {}, cancelled: true },
           );
         }
       }),
     );
+  });
+
+  const publishSecretInputOpened = Effect.fn("PiAdapter.publishSecretInputOpened")(function* (
+    context: PiSessionContext,
+    request: Extract<PiRpcEvent, { readonly type: "secret-input.requested" }>,
+  ) {
+    const pending: PiPendingInteraction = {
+      request: {
+        type: "extension-ui.requested",
+        requestId: request.requestId,
+        method: "secret_input",
+        title: request.title,
+      },
+      ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+    };
+    if (context.pendingInteractions.has(request.requestId)) {
+      yield* publish({
+        type: "runtime.error",
+        ...(yield* makeStamp()),
+        ...eventBase(context),
+        payload: {
+          message: `Pi reused pending secret-input request id '${request.requestId}'.`,
+          class: "validation_error",
+        },
+      });
+      return;
+    }
+    context.pendingInteractions.set(request.requestId, pending);
+    yield* publish({
+      type: "secret-input.requested",
+      ...(yield* makeStamp()),
+      ...eventBase(context),
+      ...(pending.turnId ? { turnId: pending.turnId } : {}),
+      requestId: interactionRequestId(request.requestId),
+      payload: { title: request.title },
+    });
   });
 
   const publishInteractionOpened = Effect.fn("PiAdapter.publishInteractionOpened")(function* (
@@ -676,6 +738,18 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           } as ProviderRuntimeEvent);
           return;
         }
+        case "owner-thread.concealment":
+          context.ownerThreadConcealed = event.concealed;
+          yield* publish({
+            type: "owner-thread.concealed",
+            ...(yield* makeStamp()),
+            ...eventBase(context),
+            payload: { concealed: event.concealed },
+          });
+          return;
+        case "secret-input.requested":
+          yield* publishSecretInputOpened(context, event);
+          return;
         case "extension-ui.requested":
           yield* publishInteractionOpened(context, event);
           return;
@@ -956,6 +1030,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         runStarted: false,
         interrupted: false,
         stopped: false,
+        ownerThreadConcealed: false,
       };
       sessions.set(input.threadId, context);
       transferred = true;
@@ -1256,7 +1331,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       yield* context.interactionMutex.withPermits(1)(
         Effect.gen(function* () {
           const pending = context.pendingInteractions.get(requestId);
-          if (!pending || pending.request.method === "confirm") {
+          if (!pending || pending.request.method === "confirm" || pending.request.method === "secret_input") {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "extension_ui_response",
@@ -1309,6 +1384,62 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         }),
       );
     });
+  const respondToSecretInput: PiAdapterShape["respondToSecretInput"] = (
+    threadId,
+    requestId,
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const context = yield* requireSession(threadId);
+      yield* context.interactionMutex.withPermits(1)(
+        Effect.gen(function* () {
+          const pending = context.pendingInteractions.get(requestId);
+          if (!pending || pending.request.method !== "secret_input") {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension_ui_response",
+              detail: `Unknown pending secret-input request: ${requestId}`,
+            });
+          }
+          const discard = input.cancelled === true || !context.ownerThreadConcealed;
+          if (discard) {
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: pending.request.requestId,
+                cancelled: true,
+              })
+              .pipe(Effect.mapError(mapRpcError("extension_ui_response")));
+            context.pendingInteractions.delete(requestId);
+            yield* publishInteractionResolved(context, pending, {
+              kind: "secret-input",
+              cancelled: true,
+            });
+            if (input.cancelled !== true) {
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "extension_ui_response",
+                detail: "Secret input was discarded because the Owner thread is not concealed.",
+              });
+            }
+            return;
+          }
+          yield* context.rpc
+            .respondToExtensionUI({
+              type: "extension_ui_response",
+              id: pending.request.requestId,
+              value: input.secret ?? "",
+              concealed: true,
+            })
+            .pipe(Effect.mapError(mapRpcError("extension_ui_response")));
+          context.pendingInteractions.delete(requestId);
+          yield* publishInteractionResolved(context, pending, {
+            kind: "secret-input",
+            cancelled: false,
+          });
+        }),
+      );
+    });
   const stopSession: PiAdapterShape["stopSession"] = (threadId) => {
     const context = sessions.get(threadId);
     return context
@@ -1341,6 +1472,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondToSecretInput,
     stopSession,
     listSessions,
     hasSession,
