@@ -67,9 +67,12 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  OrchestrationSecretInputError,
+  ProviderRespondToSecretInput,
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  SecretInputAccepted,
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
@@ -882,6 +885,15 @@ export const WsSubscribeDiscoveredLocalServersRpc = Rpc.make(
   },
 );
 
+export const WsOrchestrationRespondToSecretInputRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.respondToSecretInput,
+  {
+    payload: ProviderRespondToSecretInput,
+    success: SecretInputAccepted,
+    error: Schema.Union([OrchestrationSecretInputError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsOrchestrationDispatchCommandRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.dispatchCommand,
   {
@@ -1089,6 +1101,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeBackgroundPolicyRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsOrchestrationRespondToSecretInputRpc,
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationGetWorkflowScriptRpc,
   WsOrchestrationGetTurnDiffRpc,

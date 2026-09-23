@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -112,6 +116,7 @@ const PiExtensionUIResponse = Schema.Union([
     type: Schema.Literal("extension_ui_response"),
     id: Schema.String,
     value: Schema.String,
+    concealed: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("extension_ui_response"),
@@ -186,6 +191,18 @@ export function buildPiRpcLaunchArgs(input: PiRpcLaunchInput): ReadonlyArray<str
   ];
 }
 
+const PI_CLI_SUFFIX = "/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
+
+/** Patch the Jarvis checkout's Pi RPC before launching it. Missing scripts are left alone. */
+export function applyJarvisSecretInputPatch(nodePath: string, piCliPath: string): void {
+  const normalized = piCliPath.replaceAll("\\", "/");
+  if (!normalized.endsWith(PI_CLI_SUFFIX)) return;
+  const projectRoot = dirname(dirname(dirname(dirname(dirname(piCliPath)))));
+  const script = join(projectRoot, "scripts", "patch-pi-rpc-secret-input.mjs");
+  if (!existsSync(script)) return;
+  execFileSync(nodePath, [script], { cwd: projectRoot, stdio: "pipe" });
+}
+
 export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
   input: PiRpcLaunchInput,
 ): Effect.fn.Return<
@@ -206,6 +223,16 @@ export const makePiRpcConnection = Effect.fn("makePiRpcConnection")(function* (
   const writeMutex = yield* Semaphore.make(1);
 
   yield* Scope.addFinalizer(scope, Queue.shutdown(events));
+
+  yield* Effect.try({
+    try: () => applyJarvisSecretInputPatch(input.nodePath, input.piCliPath),
+    catch: (cause) =>
+      new PiRpcTransportError({
+        operation: "spawn",
+        detail: "Jarvis secret-input patch failed before Pi RPC started.",
+        cause,
+      }),
+  });
 
   const command = ChildProcess.make(input.nodePath, buildPiRpcLaunchArgs(input), {
     cwd: input.cwd,

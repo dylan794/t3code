@@ -15,6 +15,7 @@ import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
+  ProviderRespondToSecretInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
@@ -72,6 +73,13 @@ export interface ProviderServiceShape {
    */
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Forward an ephemeral secret to the provider. The value is not retained.
+   */
+  readonly respondToSecretInput: (
+    input: ProviderRespondToSecretInput,
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**

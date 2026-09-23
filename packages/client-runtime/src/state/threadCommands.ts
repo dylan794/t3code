@@ -1,6 +1,6 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
-import { WS_METHODS } from "@t3tools/contracts";
+import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 
 import {
   createAtomCommandScheduler,
@@ -189,6 +189,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     respondToUserInput: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:respond-to-user-input",
       execute: (input: RespondToThreadUserInputInput) => respondToThreadUserInput(input),
+      scheduler,
+      concurrency,
+    }),
+    respondToSecretInput: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:respond-to-secret-input",
+      tag: ORCHESTRATION_WS_METHODS.respondToSecretInput,
       scheduler,
       concurrency,
     }),

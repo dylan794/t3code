@@ -42,6 +42,7 @@ import {
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
+  OrchestrationSecretInputError,
   ProviderUploadFeedbackError,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
@@ -1124,6 +1125,20 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [ORCHESTRATION_WS_METHODS.respondToSecretInput]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.respondToSecretInput,
+            providerService.respondToSecretInput(input).pipe(
+              Effect.as({ accepted: true as const }),
+              Effect.mapError(
+                () =>
+                  new OrchestrationSecretInputError({
+                    message: "Secret input was not accepted.",
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,

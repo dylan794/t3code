@@ -111,6 +111,26 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 
+export const ProviderRespondToSecretInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  cancelled: Schema.optional(Schema.Boolean),
+  secret: Schema.optional(Schema.String),
+});
+export type ProviderRespondToSecretInput = typeof ProviderRespondToSecretInput.Type;
+
+export const SecretInputAccepted = Schema.Struct({
+  accepted: Schema.Literal(true),
+});
+export type SecretInputAccepted = typeof SecretInputAccepted.Type;
+
+export class OrchestrationSecretInputError extends Schema.TaggedErrorClass<OrchestrationSecretInputError>()(
+  "OrchestrationSecretInputError",
+  {
+    message: Schema.String,
+  },
+) {}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

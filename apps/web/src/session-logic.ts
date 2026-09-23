@@ -576,6 +576,57 @@ export function derivePendingUserInputs(
   );
 }
 
+export interface PendingSecretInput {
+  readonly requestId: ApprovalRequestId;
+  readonly title: string;
+  readonly createdAt: string;
+}
+
+/** Latest concealment wins. A missing record leaves the thread visible. */
+export function deriveOwnerThreadConcealed(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): boolean {
+  let concealed = false;
+  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+    if (activity.kind !== "owner-thread.concealed") continue;
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as { readonly concealed?: unknown })
+        : null;
+    concealed = payload?.concealed === true;
+  }
+  return concealed;
+}
+
+export function derivePendingSecretInputs(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingSecretInput[] {
+  const openByRequestId = new Map<ApprovalRequestId, PendingSecretInput>();
+  for (const activity of [...activities].toSorted(compareActivitiesByOrder)) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as { readonly requestId?: unknown; readonly title?: unknown })
+        : null;
+    const requestId =
+      payload && typeof payload.requestId === "string"
+        ? ApprovalRequestId.make(payload.requestId)
+        : null;
+    if (!requestId) continue;
+    if (activity.kind === "secret-input.requested") {
+      openByRequestId.set(requestId, {
+        requestId,
+        title: typeof payload?.title === "string" ? payload.title : "Owner password",
+        createdAt: activity.createdAt,
+      });
+      continue;
+    }
+    if (activity.kind === "secret-input.resolved") {
+      openByRequestId.delete(requestId);
+    }
+  }
+  return [...openByRequestId.values()];
+}
+
 function planStateFromActivity(activity: OrchestrationThreadActivity): ActivePlanState | null {
   const payload =
     activity.payload && typeof activity.payload === "object"

@@ -92,6 +92,16 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<void, TError>;
 
   /**
+   * Respond to an ephemeral secret prompt. The secret must not be persisted.
+   * Adapters without this method cannot collect secrets.
+   */
+  readonly respondToSecretInput?: (
+    threadId: ThreadId,
+    requestId: ApprovalRequestId,
+    input: { readonly secret?: string; readonly cancelled?: boolean },
+  ) => Effect.Effect<void, TError>;
+
+  /**
    * Stop one provider session.
    */
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;

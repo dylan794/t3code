@@ -156,6 +156,29 @@ describe("PiRpcProtocol", () => {
     }),
   );
 
+  it.effect("normalizes concealed secret input without retaining a password", () =>
+    Effect.gen(function* () {
+      const concealed = yield* decode(
+        '{"type":"extension_ui_request","id":"conceal-1","method":"set_owner_thread_concealed","concealed":true}',
+      );
+      const secret = yield* decode(
+        '{"type":"extension_ui_request","id":"secret-1","method":"secret_input","title":"Owner password","ephemeral":true}',
+      );
+
+      expect(normalizePiRpcEvent(concealed)).toEqual([
+        { type: "owner-thread.concealment", concealed: true },
+      ]);
+      expect(normalizePiRpcEvent(secret)).toEqual([
+        {
+          type: "secret-input.requested",
+          requestId: "secret-1",
+          title: "Owner password",
+        },
+      ]);
+      expect(JSON.stringify(normalizePiRpcEvent(secret))).not.toContain("hunter2");
+    }),
+  );
+
   it.effect("reports incomplete extension UI dialogs and invalid field types", () =>
     Effect.gen(function* () {
       const missingTitle = yield* decode(

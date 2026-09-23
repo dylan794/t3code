@@ -174,6 +174,9 @@ const ProviderRuntimeEventType = Schema.Literals([
   "request.resolved",
   "user-input.requested",
   "user-input.resolved",
+  "secret-input.requested",
+  "secret-input.resolved",
+  "owner-thread.concealed",
   "task.started",
   "task.progress",
   "task.updated",
@@ -227,6 +230,9 @@ const RequestOpenedType = Schema.Literal("request.opened");
 const RequestResolvedType = Schema.Literal("request.resolved");
 const UserInputRequestedType = Schema.Literal("user-input.requested");
 const UserInputResolvedType = Schema.Literal("user-input.resolved");
+const SecretInputRequestedType = Schema.Literal("secret-input.requested");
+const SecretInputResolvedType = Schema.Literal("secret-input.resolved");
+const OwnerThreadConcealedType = Schema.Literal("owner-thread.concealed");
 const TaskStartedType = Schema.Literal("task.started");
 const TaskProgressType = Schema.Literal("task.progress");
 const TaskUpdatedType = Schema.Literal("task.updated");
@@ -479,6 +485,21 @@ const UserInputResolvedPayload = Schema.Struct({
   cancelled: Schema.optional(Schema.Boolean),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
+
+const SecretInputRequestedPayload = Schema.Struct({
+  title: Schema.String,
+});
+export type SecretInputRequestedPayload = typeof SecretInputRequestedPayload.Type;
+
+const SecretInputResolvedPayload = Schema.Struct({
+  cancelled: Schema.Boolean,
+});
+export type SecretInputResolvedPayload = typeof SecretInputResolvedPayload.Type;
+
+const OwnerThreadConcealedPayload = Schema.Struct({
+  concealed: Schema.Boolean,
+});
+export type OwnerThreadConcealedPayload = typeof OwnerThreadConcealedPayload.Type;
 
 /**
  * Typed per-task usage rollup. Field names match the orchestration-v2 subagent
@@ -1009,6 +1030,30 @@ const ProviderRuntimeUserInputResolvedEvent = Schema.Struct({
 export type ProviderRuntimeUserInputResolvedEvent =
   typeof ProviderRuntimeUserInputResolvedEvent.Type;
 
+const ProviderRuntimeSecretInputRequestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SecretInputRequestedType,
+  payload: SecretInputRequestedPayload,
+});
+export type ProviderRuntimeSecretInputRequestedEvent =
+  typeof ProviderRuntimeSecretInputRequestedEvent.Type;
+
+const ProviderRuntimeSecretInputResolvedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SecretInputResolvedType,
+  payload: SecretInputResolvedPayload,
+});
+export type ProviderRuntimeSecretInputResolvedEvent =
+  typeof ProviderRuntimeSecretInputResolvedEvent.Type;
+
+const ProviderRuntimeOwnerThreadConcealedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: OwnerThreadConcealedType,
+  payload: OwnerThreadConcealedPayload,
+});
+export type ProviderRuntimeOwnerThreadConcealedEvent =
+  typeof ProviderRuntimeOwnerThreadConcealedEvent.Type;
+
 const ProviderRuntimeTaskStartedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TaskStartedType,
@@ -1203,6 +1248,9 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeRequestResolvedEvent,
   ProviderRuntimeUserInputRequestedEvent,
   ProviderRuntimeUserInputResolvedEvent,
+  ProviderRuntimeSecretInputRequestedEvent,
+  ProviderRuntimeSecretInputResolvedEvent,
+  ProviderRuntimeOwnerThreadConcealedEvent,
   ProviderRuntimeTaskStartedEvent,
   ProviderRuntimeTaskProgressEvent,
   ProviderRuntimeTaskUpdatedEvent,

@@ -27,6 +27,8 @@ const PiWireMessage = Schema.Struct({
   placeholder: Schema.optional(Schema.Unknown),
   prefill: Schema.optional(Schema.Unknown),
   text: Schema.optional(Schema.Unknown),
+  ephemeral: Schema.optional(Schema.Unknown),
+  concealed: Schema.optional(Schema.Unknown),
   messages: Schema.optional(Schema.Array(Schema.Unknown)),
   willRetry: Schema.optional(Schema.Boolean),
   usage: Schema.optional(Schema.Unknown),
@@ -107,6 +109,22 @@ const PiExtensionUINotification = Schema.Struct({
   notifyType: Schema.optional(Schema.Literals(["info", "warning", "error"])),
 });
 
+const PiExtensionUISecretInputRequest = Schema.Struct({
+  type: Schema.Literal("extension_ui_request"),
+  id: Schema.String,
+  method: Schema.Literal("secret_input"),
+  title: Schema.String,
+  ephemeral: Schema.optional(Schema.Boolean),
+  timeout: Schema.optional(Schema.Number),
+});
+
+const PiExtensionUIConcealRequest = Schema.Struct({
+  type: Schema.Literal("extension_ui_request"),
+  id: Schema.String,
+  method: Schema.Literal("set_owner_thread_concealed"),
+  concealed: Schema.Boolean,
+});
+
 const decodeWireLine = Schema.decodeUnknownEffect(Schema.fromJsonString(PiWireMessage));
 const decodeMessageExit = Schema.decodeUnknownExit(PiMessage);
 const decodeToolResultExit = Schema.decodeUnknownExit(PiToolResult);
@@ -115,6 +133,8 @@ const decodeExtensionUISetEditorTextRequestExit = Schema.decodeUnknownExit(
   PiExtensionUISetEditorTextRequest,
 );
 const decodeExtensionUINotificationExit = Schema.decodeUnknownExit(PiExtensionUINotification);
+const decodeExtensionUISecretInputExit = Schema.decodeUnknownExit(PiExtensionUISecretInputRequest);
+const decodeExtensionUIConcealExit = Schema.decodeUnknownExit(PiExtensionUIConcealRequest);
 
 export class PiRpcDecodeError extends Schema.TaggedErrorClass<PiRpcDecodeError>()(
   "PiRpcDecodeError",
@@ -200,6 +220,15 @@ export type PiRpcEvent =
       readonly method: "editor";
       readonly title: string;
       readonly prefill?: string;
+    }
+  | {
+      readonly type: "secret-input.requested";
+      readonly requestId: string;
+      readonly title: string;
+    }
+  | {
+      readonly type: "owner-thread.concealment";
+      readonly concealed: boolean;
     }
   | {
       readonly type: "extension-ui.invalid";
@@ -312,6 +341,30 @@ function normalizeExtensionUIRequest(message: PiWireMessage): ReadonlyArray<PiRp
           },
         ]
       : [];
+  }
+  if (message.method === "set_owner_thread_concealed") {
+    const decoded = decodeExtensionUIConcealExit(message);
+    return Exit.isSuccess(decoded)
+      ? [{ type: "owner-thread.concealment", concealed: decoded.value.concealed }]
+      : [];
+  }
+  if (message.method === "secret_input") {
+    const decoded = decodeExtensionUISecretInputExit(message);
+    return Exit.isSuccess(decoded)
+      ? [
+          {
+            type: "secret-input.requested",
+            requestId: decoded.value.id,
+            title: decoded.value.title,
+          },
+        ]
+      : [
+          {
+            type: "extension-ui.invalid",
+            ...(message.id !== undefined ? { requestId: message.id } : {}),
+            message: "Pi emitted an invalid secret-input request.",
+          },
+        ];
   }
   if (message.method === "set_editor_text") {
     const decoded = decodeExtensionUISetEditorTextRequestExit(message);

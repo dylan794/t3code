@@ -258,6 +258,14 @@ function computeSnapshotSequence(
   return Number.isFinite(minSequence) ? minSequence : 0;
 }
 
+function concealedPayload(payload: unknown): boolean {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { readonly concealed?: unknown }).concealed === true
+  );
+}
+
 function mapLatestTurn(
   row: Schema.Schema.Type<typeof ProjectionLatestTurnDbRowSchema>,
 ): OrchestrationLatestTurn {
@@ -1324,6 +1332,26 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM user_input_lifecycle
           WHERE request_order = 1
             AND kind = 'user-input.requested'
+          UNION ALL
+          SELECT activity_id
+          FROM (
+            SELECT activity_id
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind = 'owner-thread.concealed'
+            ORDER BY created_at DESC, activity_id DESC
+            LIMIT 1
+          ) AS latest_owner_thread_concealment
+          UNION ALL
+          SELECT activity_id
+          FROM (
+            SELECT activity_id
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND kind IN ('secret-input.requested', 'secret-input.resolved')
+            ORDER BY created_at DESC, activity_id DESC
+            LIMIT 8
+          ) AS recent_secret_input
         )
         SELECT
           activity.activity_id AS "activityId",
@@ -2593,6 +2621,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           left.activityId.localeCompare(right.activityId),
       );
 
+      const ownerThreadConcealed = selectedActivityRows.reduce(
+        (concealed, row) =>
+          row.kind === "owner-thread.concealed" ? concealedPayload(row.payload) : concealed,
+        false,
+      );
+      const visibleActivityRows = ownerThreadConcealed
+        ? selectedActivityRows.filter(
+            (row) =>
+              row.kind === "owner-thread.concealed" ||
+              row.kind === "secret-input.requested" ||
+              row.kind === "secret-input.resolved",
+          )
+        : selectedActivityRows;
       const thread = {
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -2614,7 +2655,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         pinOrderKey: threadRow.value.pinOrderKey ?? null,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
-        messages: messageRows.map((row) => {
+        messages: ownerThreadConcealed
+          ? []
+          : messageRows.map((row) => {
           const message = {
             id: row.messageId,
             role: row.role,
@@ -2629,8 +2672,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           }
           return message;
         }),
-        proposedPlans: proposedPlanRows.map(mapProposedPlanRow),
-        activities: selectedActivityRows.map((row) => {
+        proposedPlans: ownerThreadConcealed ? [] : proposedPlanRows.map(mapProposedPlanRow),
+        activities: visibleActivityRows.map((row) => {
           const activity = {
             id: row.activityId,
             tone: row.tone,
@@ -2645,7 +2688,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           }
           return activity;
         }),
-        checkpoints: checkpointRows.map((row) => ({
+        checkpoints: ownerThreadConcealed
+          ? []
+          : checkpointRows.map((row) => ({
           turnId: row.turnId,
           checkpointTurnCount: row.checkpointTurnCount,
           checkpointRef: row.checkpointRef,
