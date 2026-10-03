@@ -209,7 +209,6 @@ export class OwnerPrivateChannel {
     state.restoreRequestId = requestId;
   }
   cancel(threadId: ThreadId): void {
-    const state = this.threads.get(threadId);
     const ack = this.acknowledgments.get(threadId);
     if (ack) {
       clearTimeout(ack.timer);
