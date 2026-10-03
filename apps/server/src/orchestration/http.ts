@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Context from "effect/Context";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
@@ -18,7 +19,12 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
-import { presentShell, presentThread } from "../provider/pi/OwnerThreadPresentation.ts";
+import {
+  presentShell,
+  presentThread,
+  rememberPiInstances,
+} from "../provider/pi/OwnerThreadPresentation.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -26,6 +32,9 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const serverSettings = Context.getOption(yield* Effect.context<never>(), ServerSettingsService);
+    if (Option.isSome(serverSettings))
+      rememberPiInstances((yield* serverSettings.value.getSettings).providerInstances);
 
     return handlers
       .handle(

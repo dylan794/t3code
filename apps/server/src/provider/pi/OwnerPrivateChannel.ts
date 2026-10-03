@@ -12,6 +12,7 @@ interface Client {
   acknowledged: Map<ThreadId, number>;
 }
 interface Pending {
+  threadId: ThreadId;
   clientId: string;
   epoch: number;
   resolve: (value: string | undefined) => void;
@@ -172,6 +173,7 @@ export class OwnerPrivateChannel {
         client.deliver?.({ kind: "cancel", threadId, requestId, epoch: state.epoch });
       }, 60_000);
       this.pending.set(requestId, {
+        threadId,
         clientId: state.ownerClient!,
         epoch: state.epoch,
         resolve,
@@ -191,6 +193,7 @@ export class OwnerPrivateChannel {
       state = this.threads.get(threadId);
     if (
       !pending ||
+      pending.threadId !== threadId ||
       pending.clientId !== clientId ||
       state?.ownerClient !== clientId ||
       pending.epoch !== epoch ||
@@ -214,7 +217,7 @@ export class OwnerPrivateChannel {
       ack.resolve(false);
     }
     for (const [requestId, pending] of this.pending)
-      if (pending.clientId === state?.ownerClient) {
+      if (pending.threadId === threadId) {
         clearTimeout(pending.timer);
         this.pending.delete(requestId);
         pending.resolve(undefined);

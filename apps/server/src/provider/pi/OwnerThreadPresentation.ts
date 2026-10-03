@@ -6,15 +6,29 @@ import type {
 } from "@t3tools/contracts";
 import { mayPresentJarvisOwner } from "./JarvisOwnerCore.ts";
 import { ownerPrivateChannel } from "./OwnerPrivateChannel.ts";
+const piInstances = new Set<string>(["pi"]);
+export function rememberPiInstances(instances: Record<string, { driver: string }>): void {
+  for (const [id, instance] of Object.entries(instances))
+    if (instance.driver === "pi") piInstances.add(id);
+}
 
 export function privateThread(thread: {
   id: ThreadId;
   session?: { providerName: string | null } | null;
+  modelSelection?: { instanceId: string };
 }): boolean {
-  return thread.session?.providerName === "pi" || ownerPrivateChannel.concealed(thread.id);
+  return (
+    thread.session?.providerName === "pi" ||
+    (!!thread.modelSelection && piInstances.has(thread.modelSelection.instanceId)) ||
+    ownerPrivateChannel.concealed(thread.id)
+  );
 }
 export async function permittedThread(
-  thread: { id: ThreadId; session?: { providerName: string | null } | null },
+  thread: {
+    id: ThreadId;
+    session?: { providerName: string | null } | null;
+    modelSelection?: { instanceId: string };
+  },
   clientId?: string,
 ): Promise<boolean> {
   return (
