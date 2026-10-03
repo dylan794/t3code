@@ -27,7 +27,15 @@ input.on("line", (line) => {
     const dialog = pendingDialogs.get(command.id);
     if (!dialog) return;
     pendingDialogs.delete(command.id);
-    if (dialog === "private-owner") {
+    if (dialog === "unlock-conceal") {
+      if (command.concealed !== true) { finishRun("unlock-blocked"); return; }
+      pendingDialogs.set("mock-unlock-secret", "unlock-secret");
+      output({ type: "extension_ui_request", id: "mock-unlock-secret", method: "secret_input", ephemeral: true });
+    } else if (dialog === "unlock-secret") {
+      if (command.concealed !== true || command.value !== "private-password") { finishRun("unlock-blocked"); return; }
+      output({ type: "extension_ui_request", id: "mock-unlock-restore", method: "set_owner_thread_concealed", concealed: false });
+      finishRun("Owner answer after verified unlock.");
+    } else if (dialog === "private-owner") {
       if (command.cancelled !== true || command.concealed !== false || "value" in command) {
         finishRun("unsafe-private-response");
       } else {
@@ -52,7 +60,8 @@ input.on("line", (line) => {
       type: "response",
       command: "get_state",
       success: true,
-      data: { sessionId: currentSessionId, sessionFile: currentSessionFile, isStreaming },
+      data: { sessionId: currentSessionId, sessionFile: currentSessionFile, isStreaming,
+        model: { provider: "anthropic", id: "model", baseUrl: "https://api.example.com/" } },
     });
     return;
   }
@@ -113,6 +122,14 @@ input.on("line", (line) => {
     return;
   }
   if (command.type === "prompt") {
+    if (command.message === "private-unlock") {
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      output({ type: "agent_start" });
+      isStreaming = true;
+      pendingDialogs.set("mock-unlock-conceal", "unlock-conceal");
+      output({ type: "extension_ui_request", id: "mock-unlock-conceal", method: "set_owner_thread_concealed", concealed: true, requireAcknowledgment: true });
+      return;
+    }
     forkMessages.push({
       entryId: `mock-entry-${forkMessages.length + 1}`,
       text: command.message,

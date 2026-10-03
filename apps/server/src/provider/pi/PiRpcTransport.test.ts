@@ -104,6 +104,7 @@ describe("PiRpcTransport", () => {
       yield* connection.abort();
 
       expect(state).toEqual({
+        model: { provider: "anthropic", id: "model", baseUrl: "https://api.example.com/" },
         sessionId: "mock-session",
         sessionFile: "mock-session.jsonl",
         isStreaming: false,

@@ -36,6 +36,13 @@ import {
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { PiRpcEvent } from "../pi/PiRpcProtocol.ts";
 import { jarvisHostEnvironment } from "../pi/JarvisHostBinding.ts";
+import { ownerPrivateChannel } from "../pi/OwnerPrivateChannel.ts";
+import {
+  authenticateJarvisOwner,
+  mayPresentJarvisOwner,
+  monitorJarvisOwner,
+  revokeJarvisOwner,
+} from "../pi/JarvisOwnerCore.ts";
 import {
   makePiRpcConnection,
   type PiRpcConnection,
@@ -60,6 +67,7 @@ const PiState = Schema.Struct({
       Schema.Struct({
         provider: Schema.String,
         id: Schema.String,
+        baseUrl: Schema.optional(Schema.String),
       }),
     ),
   ),
@@ -127,6 +135,7 @@ interface PiSessionContext {
   interrupted: boolean;
   stopped: boolean;
   ownerConcealed: boolean;
+  readonly hostBinding: Record<string, string>;
 }
 
 export interface PiAdapterOptions {
@@ -142,6 +151,14 @@ function resumeCursorFromPiState(state: typeof PiState.Type) {
         ...(state.sessionId ? { sessionId: state.sessionId } : {}),
       }
     : undefined;
+}
+
+function canonicalHostEndpoint(value: string): string | undefined {
+  try {
+    return new URL(value).href;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseModelSlug(
@@ -520,6 +537,27 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const handlePiEvent = (context: PiSessionContext, event: PiRpcEvent) =>
     Effect.gen(function* () {
       const turnId = context.activeTurnId;
+      if (
+        [
+          "assistant.started",
+          "assistant.delta",
+          "assistant.completed",
+          "tool.started",
+          "tool.updated",
+          "tool.completed",
+          "editor-text.requested",
+          "extension-ui.notified",
+        ].includes(event.type)
+      ) {
+        const ownerClient = ownerPrivateChannel.clientFor(context.session.threadId);
+        if (
+          ownerClient &&
+          !(yield* Effect.promise(() =>
+            mayPresentJarvisOwner(context.session.threadId, ownerClient),
+          ))
+        )
+          context.ownerConcealed = true;
+      }
       // A concealment request may only reduce disclosure. An unacknowledged
       // request to restore visibility cannot turn that reduction into authority.
       if (context.ownerConcealed) {
@@ -704,6 +742,87 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           return;
         }
         case "owner-private.unsupported":
+          if (ownerPrivateChannel.clientFor(context.session.threadId)) {
+            const clientId = ownerPrivateChannel.clientFor(context.session.threadId)!;
+            if (event.method === "set_owner_thread_concealed" && event.concealed) {
+              revokeJarvisOwner(context.session.threadId);
+              context.ownerConcealed = true;
+              const concealed = yield* Effect.promise(() =>
+                ownerPrivateChannel.conceal(context.session.threadId),
+              );
+              if (event.responseRequired && event.requestId)
+                yield* context.rpc
+                  .respondToExtensionUI(
+                    concealed
+                      ? { type: "extension_ui_response", id: event.requestId, concealed: true }
+                      : {
+                          type: "extension_ui_response",
+                          id: event.requestId,
+                          cancelled: true,
+                          concealed: false,
+                        },
+                  )
+                  .pipe(Effect.ignore);
+              return;
+            }
+            if (event.method === "secret_input" && event.requestId) {
+              const value = yield* Effect.promise(() =>
+                ownerPrivateChannel.secret(context.session.threadId, event.requestId!),
+              );
+              let authorized = false;
+              if (value !== undefined) {
+                const state = decodePiState(
+                  yield* context.rpc.getState().pipe(Effect.mapError(mapRpcError("get_state"))),
+                );
+                const model = Exit.isSuccess(state) ? state.value.model : undefined;
+                const endpoint = model?.baseUrl ? canonicalHostEndpoint(model.baseUrl) : undefined;
+                if (model && endpoint && context.session.cwd) {
+                  authorized = yield* Effect.promise(() =>
+                    authenticateJarvisOwner(
+                      context.session.threadId,
+                      value,
+                      {
+                        project: context.session.cwd!,
+                        provider: model.provider,
+                        model: model.id,
+                        endpoint,
+                      },
+                      {
+                        hostConnectionId: context.hostBinding.JARVIS_T3_HOST_CONNECTION_ID ?? "",
+                        environment: context.hostBinding.JARVIS_T3_ENVIRONMENT_ID ?? "",
+                        thread: context.session.threadId,
+                        clientId,
+                      },
+                    ),
+                  );
+                }
+              }
+              yield* context.rpc
+                .respondToExtensionUI(
+                  authorized && value !== undefined
+                    ? { type: "extension_ui_response", id: event.requestId, concealed: true, value }
+                    : {
+                        type: "extension_ui_response",
+                        id: event.requestId,
+                        cancelled: true,
+                        concealed: false,
+                      },
+                )
+                .pipe(Effect.ignore);
+              return;
+            }
+            if (
+              !event.concealed &&
+              (yield* Effect.promise(() =>
+                mayPresentJarvisOwner(context.session.threadId, clientId),
+              ))
+            ) {
+              context.ownerConcealed = false;
+              ownerPrivateChannel.restore(context.session.threadId, clientId);
+              monitorJarvisOwner(context.session.threadId, clientId);
+              return;
+            }
+          }
           context.ownerConcealed ||= event.concealed;
           if (context.ownerConcealed) {
             context.assistantItemId = undefined;
@@ -856,6 +975,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
   const stopContext = (context: PiSessionContext) =>
     Effect.gen(function* () {
+      revokeJarvisOwner(context.session.threadId);
       if (context.stopped) return;
       context.stopped = true;
       yield* clearPendingInteractions(context, "stop");
@@ -1039,8 +1159,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         interrupted: false,
         stopped: false,
         ownerConcealed: false,
+        hostBinding: jarvisHostEnvironment(
+          (options?.environment ?? process.env).JARVIS_T3_ENVIRONMENT_ID,
+          boundInstanceId,
+          input.threadId,
+        ),
       };
       sessions.set(input.threadId, context);
+      ownerPrivateChannel.registerPi(input.threadId);
       transferred = true;
       yield* rpc.events.pipe(
         Stream.runForEach((event) => handlePiEvent(context, event)),
@@ -1097,6 +1223,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const selection =
         input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
       if (selection && selection.model !== context.session.model) {
+        revokeJarvisOwner(context.session.threadId);
+        context.ownerConcealed = true;
         const model = parseModelSlug(selection.model);
         if (!model) {
           return yield* new ProviderAdapterValidationError({

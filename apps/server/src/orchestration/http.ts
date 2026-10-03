@@ -18,6 +18,7 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { presentShell, presentThread } from "../provider/pi/OwnerThreadPresentation.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
@@ -37,13 +38,17 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           // and activity payload in the database has OOM-killed servers, and
           // the route's only consumer (the project CLI) reads projects alone —
           // UI clients load the shell and per-thread snapshots instead.
-          return yield* projectionSnapshotQuery
-            .getCommandReadModel()
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_snapshot_failed", cause),
-              ),
-            );
+          return yield* projectionSnapshotQuery.getCommandReadModel().pipe(
+            Effect.flatMap((snapshot) =>
+              Effect.promise(async () => ({
+                ...snapshot,
+                threads: await Promise.all(snapshot.threads.map((thread) => presentThread(thread))),
+              })),
+            ),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(
@@ -51,13 +56,12 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.shellSnapshot")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* projectionSnapshotQuery
-            .getShellSnapshot()
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_snapshot_failed", cause),
-              ),
-            );
+          return yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+            Effect.flatMap((snapshot) => Effect.promise(() => presentShell(snapshot))),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(
@@ -85,7 +89,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           if (Option.isNone(snapshot)) {
             return yield* failEnvironmentNotFound("thread_not_found");
           }
-          return projectThreadDetailSnapshot(snapshot.value);
+          return {
+            ...projectThreadDetailSnapshot(snapshot.value),
+            thread: yield* Effect.promise(() => presentThread(snapshot.value.thread)),
+          };
         }),
       )
       .handle(

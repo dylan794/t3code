@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics preferSchemaOverJson:off
+// @effect-diagnostics globalDate:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -17,7 +19,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { describe, expect } from "vite-plus/test";
+import { describe, expect, vi } from "vite-plus/test";
+import { ownerPrivateChannel } from "../pi/OwnerPrivateChannel.ts";
 
 import { makePiAdapter } from "./PiAdapter.ts";
 
@@ -50,6 +53,103 @@ function makeFakeJarvisRoot(): string {
 }
 
 describe("PiAdapter", () => {
+  it.effect(
+    "unlocks through a concealed private channel and exact Core callback without publishing credentials",
+    () =>
+      Effect.gen(function* () {
+        const jarvisRoot = makeFakeJarvisRoot();
+        const oldService = process.env.JARVIS_SERVICE_DIR;
+        process.env.JARVIS_SERVICE_DIR = jarvisRoot;
+        NodeFS.writeFileSync(
+          NodePath.join(jarvisRoot, "endpoint.json"),
+          JSON.stringify({ origin: "http://127.0.0.1:12345" }),
+        );
+        const threadId = ThreadId.make("private-success-thread");
+        const clientId = "private-success-client";
+        const frames: unknown[] = [];
+        const disconnect = ownerPrivateChannel.connect(clientId);
+        ownerPrivateChannel.subscribe(clientId, (frame) => {
+          frames.push(frame);
+          if (frame.kind === "conceal")
+            ownerPrivateChannel.acknowledge(clientId, frame.threadId, frame.epoch);
+          if (frame.kind === "secret")
+            ownerPrivateChannel.respond(
+              clientId,
+              frame.threadId,
+              frame.requestId,
+              frame.epoch,
+              "private-password",
+            );
+        });
+        ownerPrivateChannel.claim(threadId, clientId);
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (_url: string, init: RequestInit) => {
+            const input = JSON.parse(String(init.body));
+            return new Response(
+              JSON.stringify(
+                "password" in input
+                  ? {
+                      token: "PRIVATE-CORE-TOKEN",
+                      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+                    }
+                  : {
+                      allowed: true,
+                      environment: "windows-test",
+                      thread: threadId,
+                      destination: {
+                        project: jarvisRoot,
+                        provider: "anthropic",
+                        model: "model",
+                        endpoint: "https://api.example.com/",
+                      },
+                      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+                    },
+              ),
+            );
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            disconnect();
+            vi.unstubAllGlobals();
+            if (oldService === undefined) delete process.env.JARVIS_SERVICE_DIR;
+            else process.env.JARVIS_SERVICE_DIR = oldService;
+            NodeFS.rmSync(jarvisRoot, { recursive: true, force: true });
+          }),
+        );
+        const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+          instanceId: ProviderInstanceId.make("private-test"),
+          environment: { JARVIS_T3_ENVIRONMENT_ID: "windows-test" },
+        });
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("pi"),
+          cwd: jarvisRoot,
+          runtimeMode: "full-access",
+        });
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.sendTurn({ threadId, input: "private-unlock" });
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        expect(
+          events.some(
+            (event) =>
+              event.type === "content.delta" &&
+              event.payload.delta === "Owner answer after verified unlock.",
+          ),
+        ).toBe(true);
+        expect(frames).toContainEqual(expect.objectContaining({ kind: "restore" }));
+        expect(encodeJson(events)).not.toContain("private-password");
+        expect(encodeJson(events)).not.toContain("PRIVATE-CORE-TOKEN");
+        expect(encodeJson(frames)).not.toContain("private-password");
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
   it.effect(
     "rejects private requests immediately without publishing a password question or private content",
     () =>

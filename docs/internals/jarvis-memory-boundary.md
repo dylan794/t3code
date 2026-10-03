@@ -15,21 +15,32 @@ infer the endpoint from a model slug and does not prepend memory to a saved
 prompt. Model changes do not change host identity and must pass a new exact
 destination check.
 
-## Private unlock is unavailable
+## Private unlock channel
 
-This adapter rejects `secret_input` and acknowledgment-bearing
-`set_owner_thread_concealed` requests. It replies with cancellation and
-`concealed: false`; no password question or private request title reaches the
-ordinary event bus. A concealment request suppresses subsequent assistant,
-tool, composer and notification output for that provider session. An untrusted
-restore request cannot undo suppression. Restarting the provider session
-releases that temporary suppression, but cannot grant an Owner Session.
+The dedicated `owner-private.subscribe` stream carries content-free conceal,
+secret, cancellation and restore frames. `owner-private.respond` returns the
+secret directly to the provider transport. These requests do not enter the
+orchestration command/event pipeline or ordinary RPC tracing. The client
+unmounts its ordinary workspace and clears thread, shell and composer caches
+before acknowledging concealment. Every connected client must acknowledge;
+an old client without this channel prevents unlock.
 
-The server has no verified private client channel across web, desktop, mobile,
-remote subscriptions, durable snapshots and exports. It must not report
-`concealed: true` until that channel exists. Existing ordinary structured
-questions remain unsuitable for passwords. Successful T3 unlock and a full
-memory round trip remain unavailable and are release blockers.
+The initiating WebSocket connection owns the private request. Other clients
+remain concealed. Secrets expire after sixty seconds and are cancelled on
+disconnect, lock and provider stop. A Core password check against the exact
+enrolled host and actual Pi model endpoint must succeed before the password is
+forwarded to Pi. A separate transport-only Core grant checks every presentation
+and is never renewed merely because the host retains it. Restore requires a
+fresh Core check. Model changes revoke it. A one-second Core monitor detects
+silent lock or service loss; output dispatch checks do not wait for that poll.
+
+HTTP snapshots, thread search, websocket snapshots, replay and live thread
+events redact locked Pi thread content. Private restored content stays volatile
+in clients and is not written to their ordinary caches. Ordinary structured
+questions remain unsuitable for passwords. Focused transport tests prove a
+successful unlock through a synthetic Core callback. Actual client/model and
+Windows/Mac route verification remain release gates, including the interval
+between silent Core revocation and client concealment.
 
 Direct Codex and other provider adapters do not receive recall packets. Their
 ordinary saved turn inputs are not a disposable context. Pi's

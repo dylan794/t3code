@@ -5,6 +5,15 @@ import * as NodeURL from "node:url";
 export default defineConfig({
   resolve: {
     alias: {
+      "@t3tools/contracts/settings": NodeURL.fileURLToPath(
+        new URL("./packages/contracts/src/settings.ts", import.meta.url),
+      ),
+      "@t3tools/contracts/relay": NodeURL.fileURLToPath(
+        new URL("./packages/contracts/src/relay.ts", import.meta.url),
+      ),
+      "@t3tools/contracts": NodeURL.fileURLToPath(
+        new URL("./packages/contracts/src/index.ts", import.meta.url),
+      ),
       "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),
     },
   },
