@@ -7,9 +7,12 @@ import type {
 import { mayPresentJarvisOwner } from "./JarvisOwnerCore.ts";
 import { ownerPrivateChannel } from "./OwnerPrivateChannel.ts";
 const piInstances = new Set<string>(["pi"]);
+const otherInstances = new Set<string>(["codex", "claude", "cursor", "grok", "opencode"]);
 export function rememberPiInstances(instances: Record<string, { driver: string }>): void {
-  for (const [id, instance] of Object.entries(instances))
+  for (const [id, instance] of Object.entries(instances)) {
     if (instance.driver === "pi") piInstances.add(id);
+    else otherInstances.add(id);
+  }
 }
 
 export function privateThread(thread: {
@@ -19,7 +22,9 @@ export function privateThread(thread: {
 }): boolean {
   return (
     thread.session?.providerName === "pi" ||
-    (!!thread.modelSelection && piInstances.has(thread.modelSelection.instanceId)) ||
+    (!!thread.modelSelection &&
+      (piInstances.has(thread.modelSelection.instanceId) ||
+        !otherInstances.has(thread.modelSelection.instanceId))) ||
     ownerPrivateChannel.concealed(thread.id)
   );
 }
