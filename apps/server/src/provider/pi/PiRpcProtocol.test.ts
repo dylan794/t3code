@@ -1,5 +1,6 @@
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { describe, expect } from "vite-plus/test";
 
 import {
@@ -9,8 +10,57 @@ import {
 } from "./PiRpcProtocol.ts";
 
 const decode = decodePiRpcLine;
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("PiRpcProtocol", () => {
+  it.effect("keeps private Owner requests outside ordinary provider dialog events", () =>
+    Effect.gen(function* () {
+      for (const method of ["secret_input", "set_owner_thread_concealed"] as const) {
+        const message = yield* decode(
+          encodeJson({
+            type: "extension_ui_request",
+            id: "private-1",
+            method,
+            title: "PRIVATE-TITLE",
+            prefill: "PRIVATE-PREFILL",
+            value: "PRIVATE-VALUE",
+            concealed: true,
+            ephemeral: true,
+            requireAcknowledgment: true,
+          }),
+        );
+        const events = normalizePiRpcEvent(message);
+        expect(events).toEqual([
+          {
+            type: "owner-private.unsupported",
+            requestId: "private-1",
+            method,
+            responseRequired: true,
+            concealed: true,
+          },
+        ]);
+        expect(encodeJson(events)).not.toContain("PRIVATE-");
+      }
+      const fireAndForget = yield* decode(
+        encodeJson({
+          type: "extension_ui_request",
+          id: "private-2",
+          method: "set_owner_thread_concealed",
+          concealed: false,
+        }),
+      );
+      expect(normalizePiRpcEvent(fireAndForget)).toEqual([
+        {
+          type: "owner-private.unsupported",
+          requestId: "private-2",
+          method: "set_owner_thread_concealed",
+          responseRequired: false,
+          concealed: false,
+        },
+      ]);
+    }),
+  );
+
   it.effect("decodes correlated command responses", () =>
     Effect.gen(function* () {
       const message = yield* decode(

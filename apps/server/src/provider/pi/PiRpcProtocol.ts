@@ -26,6 +26,9 @@ const PiWireMessage = Schema.Struct({
   timeout: Schema.optional(Schema.Unknown),
   placeholder: Schema.optional(Schema.Unknown),
   prefill: Schema.optional(Schema.Unknown),
+  concealed: Schema.optional(Schema.Unknown),
+  ephemeral: Schema.optional(Schema.Unknown),
+  requireAcknowledgment: Schema.optional(Schema.Unknown),
   text: Schema.optional(Schema.Unknown),
   messages: Schema.optional(Schema.Array(Schema.Unknown)),
   willRetry: Schema.optional(Schema.Boolean),
@@ -131,6 +134,13 @@ export interface PiRpcResponse {
 }
 
 export type PiRpcEvent =
+  | {
+      readonly type: "owner-private.unsupported";
+      readonly requestId?: string;
+      readonly method: "secret_input" | "set_owner_thread_concealed";
+      readonly responseRequired: boolean;
+      readonly concealed: boolean;
+    }
   | { readonly type: "run.started" }
   | { readonly type: "run.ended"; readonly willRetry: boolean }
   | { readonly type: "run.settled" }
@@ -300,6 +310,21 @@ export function normalizePiRpcEvent(message: PiWireMessage): ReadonlyArray<PiRpc
 }
 
 function normalizeExtensionUIRequest(message: PiWireMessage): ReadonlyArray<PiRpcEvent> {
+  // Private requests must never become ordinary, persisted provider questions.
+  // This host cannot acknowledge concealment until its snapshots and every
+  // subscribed client have an Owner capability bound to the Pi session.
+  if (message.method === "secret_input" || message.method === "set_owner_thread_concealed") {
+    return [
+      {
+        type: "owner-private.unsupported",
+        ...(message.id !== undefined ? { requestId: message.id } : {}),
+        method: message.method,
+        responseRequired:
+          message.method === "secret_input" || message.requireAcknowledgment === true,
+        concealed: message.method === "secret_input" || message.concealed !== false,
+      },
+    ];
+  }
   if (message.method === "notify") {
     const decoded = decodeExtensionUINotificationExit(message);
     return Exit.isSuccess(decoded)

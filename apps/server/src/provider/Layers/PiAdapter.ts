@@ -35,6 +35,7 @@ import {
 } from "../Errors.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { PiRpcEvent } from "../pi/PiRpcProtocol.ts";
+import { jarvisHostEnvironment } from "../pi/JarvisHostBinding.ts";
 import {
   makePiRpcConnection,
   type PiRpcConnection,
@@ -125,6 +126,7 @@ interface PiSessionContext {
   runStarted: boolean;
   interrupted: boolean;
   stopped: boolean;
+  ownerConcealed: boolean;
 }
 
 export interface PiAdapterOptions {
@@ -518,6 +520,31 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const handlePiEvent = (context: PiSessionContext, event: PiRpcEvent) =>
     Effect.gen(function* () {
       const turnId = context.activeTurnId;
+      // A concealment request may only reduce disclosure. An unacknowledged
+      // request to restore visibility cannot turn that reduction into authority.
+      if (context.ownerConcealed) {
+        switch (event.type) {
+          case "assistant.started":
+          case "assistant.delta":
+          case "assistant.completed":
+          case "tool.started":
+          case "tool.updated":
+          case "tool.completed":
+          case "editor-text.requested":
+            return;
+          case "extension-ui.requested":
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: event.requestId,
+                cancelled: true,
+              })
+              .pipe(Effect.catch(() => Effect.void));
+            return;
+          case "extension-ui.notified":
+            return;
+        }
+      }
       switch (event.type) {
         case "run.started":
           if (turnId) {
@@ -554,8 +581,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         case "run.settled": {
           yield* clearPendingInteractions(context, "settled");
           const interrupted = context.interrupted;
-          const stopReason = context.assistantStopReason;
-          const failed = stopReason === "error";
+          const stopReason = context.ownerConcealed ? "blocked" : context.assistantStopReason;
+          const failed = stopReason === "error" || stopReason === "blocked";
           context.activeTurnId = undefined;
           context.assistantItemId = undefined;
           context.assistantStopReason = undefined;
@@ -676,6 +703,41 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           } as ProviderRuntimeEvent);
           return;
         }
+        case "owner-private.unsupported":
+          context.ownerConcealed ||= event.concealed;
+          if (context.ownerConcealed) {
+            context.assistantItemId = undefined;
+            context.assistantStopReason = undefined;
+            context.lastTurnNotification = {
+              level: "warning",
+              message:
+                "Jarvis unlock is unavailable: this host has no verified Owner-private client channel. No password was requested.",
+            };
+          }
+          if (event.responseRequired && event.requestId !== undefined) {
+            yield* context.rpc
+              .respondToExtensionUI({
+                type: "extension_ui_response",
+                id: event.requestId,
+                cancelled: true,
+                concealed: false,
+              })
+              .pipe(Effect.catch(() => Effect.void));
+          }
+          // Emit only fixed host status. Titles/prefill and private request
+          // content are not forwarded to orchestration, clients, or logs.
+          yield* publish({
+            type: "runtime.warning",
+            ...(yield* makeStamp()),
+            ...eventBase(context),
+            ...(turnId ? { turnId } : {}),
+            payload: {
+              message:
+                "Jarvis unlock is unavailable: this host has no verified Owner-private client channel. No password was requested.",
+            },
+          });
+          if (turnId && context.ownerConcealed) yield* settleHandledTurn(context, turnId);
+          return;
         case "extension-ui.requested":
           yield* publishInteractionOpened(context, event);
           return;
@@ -753,7 +815,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             ...(yield* makeStamp()),
             ...eventBase(context),
             ...(turnId ? { turnId } : {}),
-            payload: { message: event.message, class: "transport_error" },
+            payload: {
+              message: context.ownerConcealed
+                ? "The concealed Pi session reported an error."
+                : event.message,
+              class: "transport_error",
+            },
           });
           return;
         case "runtime.exited":
@@ -761,7 +828,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           context.session = {
             ...context.session,
             status: "error",
-            lastError: event.message,
+            lastError: context.ownerConcealed ? "The concealed Pi session exited." : event.message,
             updatedAt: yield* nowIso,
           };
           yield* publish({
@@ -769,13 +836,20 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             ...(yield* makeStamp()),
             ...eventBase(context),
             ...(turnId ? { turnId } : {}),
-            payload: { message: event.message, class: "transport_error" },
+            payload: {
+              message: context.ownerConcealed ? "The concealed Pi session exited." : event.message,
+              class: "transport_error",
+            },
           });
           yield* publish({
             type: "session.exited",
             ...(yield* makeStamp()),
             ...eventBase(context),
-            payload: { exitKind: "error", reason: event.message, recoverable: true },
+            payload: {
+              exitKind: "error",
+              reason: context.ownerConcealed ? "The concealed Pi session exited." : event.message,
+              recoverable: true,
+            },
           });
       }
     });
@@ -868,7 +942,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         cwd: path.resolve(input.cwd.trim()),
         ...(Exit.isSuccess(resume) ? { sessionPath: resume.value.sessionFile } : {}),
         additionalArgs: tokenizeCliArgs(settings.launchArgs),
-        environment: { ...options?.environment, PI_OAUTH_CALLBACK_HOST: "::" },
+        environment: {
+          ...options?.environment,
+          ...jarvisHostEnvironment(
+            (options?.environment ?? process.env).JARVIS_T3_ENVIRONMENT_ID,
+            boundInstanceId,
+            input.threadId,
+          ),
+          PI_OAUTH_CALLBACK_HOST: "::",
+        },
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         Effect.provideService(Scope.Scope, sessionScope),
@@ -956,6 +1038,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         runStarted: false,
         interrupted: false,
         stopped: false,
+        ownerConcealed: false,
       };
       sessions.set(input.threadId, context);
       transferred = true;

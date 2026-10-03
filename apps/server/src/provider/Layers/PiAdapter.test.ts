@@ -29,6 +29,7 @@ const fixturePath = NodePath.join(
   "piRpcMockPeer.mjs",
 );
 const decodeSettings = Schema.decodeSync(PiSettings);
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 function makeFakeJarvisRoot(): string {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pi-adapter-"));
@@ -49,6 +50,74 @@ function makeFakeJarvisRoot(): string {
 }
 
 describe("PiAdapter", () => {
+  it.effect(
+    "rejects private requests immediately without publishing a password question or private content",
+    () =>
+      Effect.gen(function* () {
+        const jarvisRoot = makeFakeJarvisRoot();
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(jarvisRoot, { recursive: true, force: true })),
+        );
+        const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+          instanceId: ProviderInstanceId.make("pi-test"),
+        });
+        const threadId = ThreadId.make("pi-private-owner-thread");
+        yield* adapter.startSession({
+          threadId,
+          provider: ProviderDriverKind.make("pi"),
+          cwd: jarvisRoot,
+          runtimeMode: "full-access",
+        });
+        for (const input of ["private-secret", "private-conceal", "private-restore"]) {
+          const eventsFiber = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          const otherClientFiber = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          yield* adapter.sendTurn({ threadId, input });
+          const events = Array.from(yield* Fiber.join(eventsFiber));
+          const otherClientEvents = Array.from(yield* Fiber.join(otherClientFiber));
+          expect(encodeJson(otherClientEvents)).not.toContain("PRIVATE-OWNER-");
+          expect(
+            otherClientEvents.some(
+              (event) => event.type === "content.delta" || event.type === "user-input.requested",
+            ),
+          ).toBe(false);
+          expect(events.at(-1)).toMatchObject({
+            type: "turn.completed",
+            payload: { state: "failed", stopReason: "blocked" },
+          });
+          expect(
+            events.some(
+              (event) =>
+                event.type === "user-input.requested" || event.type === "user-input.resolved",
+            ),
+          ).toBe(false);
+          expect(encodeJson(events)).not.toContain("PRIVATE-OWNER-");
+          expect(encodeJson(events)).not.toContain("unsafe-private-response");
+          expect(
+            events.some((event) => event.type === "content.delta" || event.type === "item.started"),
+          ).toBe(false);
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              type: "runtime.warning",
+              payload: {
+                message:
+                  "Jarvis unlock is unavailable: this host has no verified Owner-private client channel. No password was requested.",
+              },
+            }),
+          );
+        }
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("fails a prompt that Pi handles without starting a run and releases the session", () =>
     Effect.gen(function* () {
       const jarvisRoot = makeFakeJarvisRoot();

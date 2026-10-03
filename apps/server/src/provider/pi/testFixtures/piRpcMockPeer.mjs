@@ -27,7 +27,13 @@ input.on("line", (line) => {
     const dialog = pendingDialogs.get(command.id);
     if (!dialog) return;
     pendingDialogs.delete(command.id);
-    if (dialog === "confirm") {
+    if (dialog === "private-owner") {
+      if (command.cancelled !== true || command.concealed !== false || "value" in command) {
+        finishRun("unsafe-private-response");
+      } else {
+        finishRun("private-request-cancelled-without-password");
+      }
+    } else if (dialog === "confirm") {
       finishRun(
         command.cancelled === true
           ? "cancelled"
@@ -111,6 +117,54 @@ input.on("line", (line) => {
       entryId: `mock-entry-${forkMessages.length + 1}`,
       text: command.message,
     });
+    if (command.message === "private-restore") {
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      output({ type: "agent_start" });
+      output({
+        type: "extension_ui_request",
+        id: "mock-private-restore",
+        method: "set_owner_thread_concealed",
+        concealed: false,
+      });
+      output({
+        type: "extension_ui_request",
+        id: "mock-private-notification",
+        method: "notify",
+        message: "PRIVATE-OWNER-NOTIFICATION",
+      });
+      output({
+        type: "extension_ui_request",
+        id: "mock-private-editor",
+        method: "set_editor_text",
+        text: "PRIVATE-OWNER-EDITOR",
+      });
+      output({
+        type: "tool_execution_start",
+        toolCallId: "private-tool",
+        toolName: "bash",
+        args: { command: "PRIVATE-OWNER-TOOL" },
+      });
+      finishRun("PRIVATE-OWNER-LATE-ASSISTANT");
+      return;
+    }
+    if (command.message === "private-secret" || command.message === "private-conceal") {
+      output({ id: command.id, type: "response", command: "prompt", success: true });
+      output({ type: "agent_start" });
+      isStreaming = true;
+      pendingDialogs.set("mock-private-owner", "private-owner");
+      output({
+        type: "extension_ui_request",
+        id: "mock-private-owner",
+        method:
+          command.message === "private-secret" ? "secret_input" : "set_owner_thread_concealed",
+        title: "PRIVATE-OWNER-TITLE",
+        prefill: "PRIVATE-OWNER-PREFILL",
+        concealed: true,
+        ephemeral: true,
+        requireAcknowledgment: true,
+      });
+      return;
+    }
     if (command.message === "handled-without-run") {
       output({
         type: "extension_ui_request",
