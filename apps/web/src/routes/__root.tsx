@@ -1,3 +1,4 @@
+import { OwnerPrivateBoundary } from "../components/OwnerPrivateBoundary";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -129,28 +130,30 @@ function RootRouteView() {
   );
 
   return (
-    <ToastProvider>
-      <AnchoredToastProvider>
-        <DocumentTitleSync />
-        <ContrastAppearanceSync />
-        <GlassAppearanceSync />
-        <FontAppearanceSync />
-        {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-        <RelayClientInstallDialog />
-        <ConnectOnboardingDialog />
-        <SshPasswordPromptDialog />
-        <ConfirmDialogHost />
-        <SlowRpcRequestToastCoordinator />
-        <HostedStaticEnvironmentBootstrap />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
-        {primaryEnvironmentAuthenticated ? <PlanAgentSelectionHeal /> : null}
-        {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-        {appShell}
-        {/* Above the router: a theme draft is judged by walking the app, so the
+    <OwnerPrivateBoundary>
+      <ToastProvider>
+        <AnchoredToastProvider>
+          <DocumentTitleSync />
+          <ContrastAppearanceSync />
+          <GlassAppearanceSync />
+          <FontAppearanceSync />
+          {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
+          <RelayClientInstallDialog />
+          <ConnectOnboardingDialog />
+          <SshPasswordPromptDialog />
+          <ConfirmDialogHost />
+          <SlowRpcRequestToastCoordinator />
+          <HostedStaticEnvironmentBootstrap />
+          {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+          {primaryEnvironmentAuthenticated ? <PlanAgentSelectionHeal /> : null}
+          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+          {appShell}
+          {/* Above the router: a theme draft is judged by walking the app, so the
             editor has to survive navigation away from settings. */}
-        <ThemeEditorHost />
-      </AnchoredToastProvider>
-    </ToastProvider>
+          <ThemeEditorHost />
+        </AnchoredToastProvider>
+      </ToastProvider>
+    </OwnerPrivateBoundary>
   );
 }
 

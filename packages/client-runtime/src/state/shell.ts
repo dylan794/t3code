@@ -1,4 +1,9 @@
 import {
+  isOwnerPrivateConcealed,
+  isOwnerPrivateVolatile,
+  registerOwnerPrivatePurger,
+} from "./ownerPrivate.ts";
+import {
   ORCHESTRATION_WS_METHODS,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
@@ -10,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -55,7 +61,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const snapshotLoader = yield* ShellSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
-  const cachedSnapshot = yield* cache.loadShell(environmentId).pipe(
+  const cachedSnapshot = yield* (
+    isOwnerPrivateConcealed(environmentId)
+      ? Effect.succeed(Option.none<OrchestrationShellSnapshot>())
+      : cache.loadShell(environmentId)
+  ).pipe(
     Effect.catch((error) =>
       Effect.logWarning("Could not load cached environment shell.").pipe(
         Effect.annotateLogs({
@@ -75,19 +85,40 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const lastAuthoritativeSession = yield* Ref.make<RpcSession | null>(null);
   const activeSubscriptionSession = yield* Ref.make<RpcSession | null>(null);
   const persistence = yield* Queue.sliding<OrchestrationShellSnapshot>(1);
+  const privacyPersistenceLock = yield* Semaphore.make(1);
+  const unregisterPrivatePurger = registerOwnerPrivatePurger(
+    environmentId,
+    privacyPersistenceLock.withPermits(1)(
+      Effect.gen(function* () {
+        yield* Queue.takeAll(persistence);
+        yield* SubscriptionRef.set(state, {
+          snapshot: Option.none(),
+          status: "empty",
+          error: Option.none(),
+        });
+      }),
+    ),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(unregisterPrivatePurger));
 
   const persist = Effect.fn("EnvironmentShellState.persist")(function* (
     snapshot: OrchestrationShellSnapshot,
   ) {
-    yield* cache.saveShell(environmentId, snapshot).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Could not persist environment shell cache.").pipe(
-          Effect.annotateLogs({
-            environmentId,
-            ...safeErrorLogAttributes(error),
-          }),
-        ),
-      ),
+    if (isOwnerPrivateVolatile(environmentId)) return;
+    yield* privacyPersistenceLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (isOwnerPrivateVolatile(environmentId)) return;
+        yield* cache.saveShell(environmentId, snapshot).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not persist environment shell cache.").pipe(
+              Effect.annotateLogs({
+                environmentId,
+                ...safeErrorLogAttributes(error),
+              }),
+            ),
+          ),
+        );
+      }),
     );
   });
 
@@ -138,6 +169,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const applyItem = Effect.fn("EnvironmentShellState.applyItem")(function* (
     item: OrchestrationShellStreamItem,
   ) {
+    if (isOwnerPrivateConcealed(environmentId)) return;
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
