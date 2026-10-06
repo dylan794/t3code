@@ -175,6 +175,7 @@ export function runStream<TTag extends EnvironmentStreamCommandRpcTag>(
 }
 
 interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
+  readonly onSubscriptionEnd?: Effect.Effect<void>;
   readonly onExpectedFailure?: (
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
@@ -230,6 +231,7 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                         input,
                       });
                       return method(input).pipe(
+                        Stream.ensuring(options?.onSubscriptionEnd ?? Effect.void),
                         Stream.ensuring(completeObservation),
                         Stream.catchCause((cause) => {
                           const hasOnlyExpectedFailures =

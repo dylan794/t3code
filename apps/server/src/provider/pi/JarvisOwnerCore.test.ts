@@ -70,6 +70,52 @@ describe("Jarvis Owner Core callback", () => {
       });
       expect(await mayPresentJarvisOwner(thread, "owner-core-client")).toBe(false);
       expect(await mayPresentJarvisOwner(thread, "owner-core-client")).toBe(false);
+      expect(await authenticateJarvisOwner(thread, "PRIVATE-PASSWORD", scope, binding)).toBe(true);
+      const started = Promise.withResolvers<void>();
+      const delayed = Promise.withResolvers<Response>();
+      fetcher.mockImplementationOnce(() => {
+        started.resolve();
+        return delayed.promise;
+      });
+      const oldPresentation = mayPresentJarvisOwner(thread, binding.clientId);
+      await started.promise;
+      expect(await authenticateJarvisOwner(thread, "NEW-PASSWORD", scope, binding)).toBe(true);
+      delayed.resolve(new Response(JSON.stringify({ allowed: false })));
+      expect(await oldPresentation).toBe(false);
+      expect(await mayPresentJarvisOwner(thread, binding.clientId)).toBe(true);
+
+      const authenticationStarted = Promise.withResolvers<void>();
+      const authenticationReply = Promise.withResolvers<Response>();
+      fetcher.mockImplementationOnce(() => {
+        authenticationStarted.resolve();
+        return authenticationReply.promise;
+      });
+      const oldAuthentication = authenticateJarvisOwner(thread, "OLD-PASSWORD", scope, binding);
+      await authenticationStarted.promise;
+      expect(await authenticateJarvisOwner(thread, "NEW-PASSWORD", scope, binding)).toBe(true);
+      authenticationReply.resolve(
+        new Response(
+          JSON.stringify({
+            token: "OLD-TOKEN",
+            expiresAt: presentation.expiresAt,
+          }),
+        ),
+      );
+      expect(await oldAuthentication).toBe(false);
+      expect(await mayPresentJarvisOwner(thread, binding.clientId)).toBe(true);
+      const concealCount = frames.filter(
+        (frame) => (frame as { kind: string }).kind === "conceal",
+      ).length;
+      const expiry = Date.parse(presentation.expiresAt) + 1;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(expiry);
+      try {
+        expect(await mayPresentJarvisOwner(thread, binding.clientId)).toBe(false);
+        expect(
+          frames.filter((frame) => (frame as { kind: string }).kind === "conceal").length,
+        ).toBeGreaterThan(concealCount);
+      } finally {
+        clock.mockRestore();
+      }
     } finally {
       revokeJarvisOwner(thread);
       disconnect();

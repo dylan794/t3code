@@ -33,6 +33,18 @@ forwarded to Pi. A separate transport-only Core grant checks every presentation
 and is never renewed merely because the host retains it. Restore requires a
 fresh Core check. Model changes revoke it. A one-second Core monitor detects
 silent lock or service loss; output dispatch checks do not wait for that poll.
+The acknowledgement fence is checked again when accepting a secret and when
+presenting content, so a newly connected client cannot reuse an earlier
+concealment check. Grant expiry sends concealment instead of leaving restored
+content visible. A late authentication or presentation reply cannot replace or
+revoke a newer grant.
+
+Ordinary provider claims have no private epoch and do not conceal the workspace
+when their connection ends or another client subscribes. Private Pi output stays
+fenced after its owning client disconnects. Interrupting a private turn cancels
+its pending secret before sending the provider abort. Private stream teardown
+conceals restored client content on transport loss, before reconnect; a new
+server session resets only the epoch comparison and retains the content lock.
 
 HTTP snapshots, thread search, websocket snapshots, replay and live thread
 events redact locked Pi thread content. Private restored content stays volatile

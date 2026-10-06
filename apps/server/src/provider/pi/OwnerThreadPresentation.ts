@@ -2,10 +2,12 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadShell,
+  OrchestrationThreadDetailSnapshot,
   ThreadId,
 } from "@t3tools/contracts";
 import { mayPresentJarvisOwner } from "./JarvisOwnerCore.ts";
 import { ownerPrivateChannel } from "./OwnerPrivateChannel.ts";
+import { projectThreadDetailSnapshot } from "../../orchestration/ActivityPayloadProjection.ts";
 const piInstances = new Set<string>(["pi"]);
 const otherInstances = new Set<string>(["codex", "claude", "cursor", "grok", "opencode"]);
 export function rememberPiInstances(instances: Record<string, { driver: string }>): void {
@@ -58,6 +60,13 @@ export async function presentThread(
     session: null,
     titleRegeneration: null,
   };
+}
+export async function presentThreadSnapshot(
+  snapshot: OrchestrationThreadDetailSnapshot,
+  clientId?: string,
+): Promise<OrchestrationThreadDetailSnapshot> {
+  const projected = projectThreadDetailSnapshot(snapshot);
+  return { ...projected, thread: await presentThread(projected.thread, clientId) };
 }
 export async function presentShellThread(
   thread: OrchestrationThreadShell,

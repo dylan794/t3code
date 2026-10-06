@@ -29,6 +29,7 @@ interface Grant {
   epoch: number;
 }
 const grants = new Map<ThreadId, Grant>();
+const authentications = new Map<ThreadId, symbol>();
 const monitors = new Map<ThreadId, ReturnType<typeof setInterval>>();
 
 function serviceDirectory(): string {
@@ -85,6 +86,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 export function revokeJarvisOwner(threadId: ThreadId): void {
+  authentications.delete(threadId);
   grants.delete(threadId);
   const monitor = monitors.get(threadId);
   if (monitor) clearInterval(monitor);
@@ -111,6 +113,8 @@ export async function authenticateJarvisOwner(
   binding: Binding,
 ): Promise<boolean> {
   grants.delete(threadId);
+  const authentication = Symbol();
+  authentications.set(threadId, authentication);
   const epoch = ownerPrivateChannel.epoch(threadId);
   try {
     const reply = object(
@@ -122,6 +126,7 @@ export async function authenticateJarvisOwner(
       typeof reply.expiresAt !== "string" ||
       !(Date.parse(reply.expiresAt) > Date.now()) ||
       Date.parse(reply.expiresAt) > Date.now() + 600_000 ||
+      authentications.get(threadId) !== authentication ||
       ownerPrivateChannel.clientFor(threadId) !== binding.clientId ||
       ownerPrivateChannel.epoch(threadId) !== epoch
     )
@@ -136,6 +141,8 @@ export async function authenticateJarvisOwner(
     return await mayPresentJarvisOwner(threadId, binding.clientId);
   } catch {
     return false;
+  } finally {
+    if (authentications.get(threadId) === authentication) authentications.delete(threadId);
   }
 }
 export async function mayPresentJarvisOwner(
@@ -143,13 +150,15 @@ export async function mayPresentJarvisOwner(
   clientId: string,
 ): Promise<boolean> {
   const grant = grants.get(threadId);
+  if (!grant || grant.binding.clientId !== clientId) return false;
   if (
-    !grant ||
-    grant.binding.clientId !== clientId ||
     !(Date.parse(grant.expiresAt) > Date.now()) ||
-    grant.epoch !== ownerPrivateChannel.epoch(threadId)
-  )
+    grant.epoch !== ownerPrivateChannel.epoch(threadId) ||
+    !ownerPrivateChannel.acknowledged(threadId, clientId)
+  ) {
+    revokeJarvisOwner(threadId);
     return false;
+  }
   try {
     const reply = object(
       await request(
@@ -173,12 +182,12 @@ export async function mayPresentJarvisOwner(
       Date.parse(reply.expiresAt) <= Date.now() + 60_000 &&
       Object.entries(grant.scope).every(([key, value]) => destination?.[key] === value) &&
       grants.get(threadId) === grant &&
-      ownerPrivateChannel.clientFor(threadId) === clientId &&
+      ownerPrivateChannel.acknowledged(threadId, clientId) &&
       grant.epoch === ownerPrivateChannel.epoch(threadId);
-    if (!allowed) revokeJarvisOwner(threadId);
+    if (!allowed && grants.get(threadId) === grant) revokeJarvisOwner(threadId);
     return allowed;
   } catch {
-    revokeJarvisOwner(threadId);
+    if (grants.get(threadId) === grant) revokeJarvisOwner(threadId);
     return false;
   }
 }

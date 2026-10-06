@@ -135,6 +135,7 @@ interface PiSessionContext {
   interrupted: boolean;
   stopped: boolean;
   ownerConcealed: boolean;
+  ownerPrivateActive: boolean;
   readonly hostBinding: Record<string, string>;
 }
 
@@ -547,14 +548,18 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           "tool.completed",
           "editor-text.requested",
           "extension-ui.notified",
+          "extension-ui.requested",
+          "runtime.error",
+          "runtime.exited",
         ].includes(event.type)
       ) {
         const ownerClient = ownerPrivateChannel.clientFor(context.session.threadId);
         if (
-          ownerClient &&
-          !(yield* Effect.promise(() =>
-            mayPresentJarvisOwner(context.session.threadId, ownerClient),
-          ))
+          (context.ownerPrivateActive && !ownerClient) ||
+          (ownerClient &&
+            !(yield* Effect.promise(() =>
+              mayPresentJarvisOwner(context.session.threadId, ownerClient),
+            )))
         )
           context.ownerConcealed = true;
       }
@@ -742,6 +747,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           return;
         }
         case "owner-private.unsupported":
+          context.ownerPrivateActive = true;
           if (ownerPrivateChannel.clientFor(context.session.threadId)) {
             const clientId = ownerPrivateChannel.clientFor(context.session.threadId)!;
             if (event.method === "set_owner_thread_concealed" && event.concealed) {
@@ -943,6 +949,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
           });
           return;
         case "runtime.exited":
+          revokeJarvisOwner(context.session.threadId);
+          if (context.ownerPrivateActive) context.ownerConcealed = true;
           yield* clearPendingInteractions(context, "exit");
           context.session = {
             ...context.session,
@@ -1159,6 +1167,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         interrupted: false,
         stopped: false,
         ownerConcealed: false,
+        ownerPrivateActive: false,
         hostBinding: jarvisHostEnvironment(
           (options?.environment ?? process.env).JARVIS_T3_ENVIRONMENT_ID,
           boundInstanceId,
@@ -1294,6 +1303,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const context = yield* requireSession(threadId);
       const turnId = context.activeTurnId;
       context.interrupted = true;
+      if (context.ownerPrivateActive) {
+        context.ownerConcealed = true;
+        revokeJarvisOwner(threadId);
+      }
       yield* clearPendingInteractions(context, "interrupt");
       yield* context.rpc.abort().pipe(
         Effect.mapError(

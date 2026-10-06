@@ -8,7 +8,6 @@ import * as Option from "effect/Option";
 import * as Context from "effect/Context";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
@@ -22,6 +21,7 @@ import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import {
   presentShell,
   presentThread,
+  presentThreadSnapshot,
   rememberPiInstances,
 } from "../provider/pi/OwnerThreadPresentation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -98,10 +98,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           if (Option.isNone(snapshot)) {
             return yield* failEnvironmentNotFound("thread_not_found");
           }
-          return {
-            ...projectThreadDetailSnapshot(snapshot.value),
-            thread: yield* Effect.promise(() => presentThread(snapshot.value.thread)),
-          };
+          return yield* Effect.promise(() => presentThreadSnapshot(snapshot.value));
         }),
       )
       .handle(

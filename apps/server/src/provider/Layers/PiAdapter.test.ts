@@ -147,8 +147,68 @@ describe("PiAdapter", () => {
         expect(encodeJson(events)).not.toContain("private-password");
         expect(encodeJson(events)).not.toContain("PRIVATE-CORE-TOKEN");
         expect(encodeJson(frames)).not.toContain("private-password");
+        disconnect();
+        const disconnectedEvents = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "turn.completed"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* adapter.sendTurn({ threadId, input: "private-restore" });
+        const afterDisconnect = Array.from(yield* Fiber.join(disconnectedEvents));
+        expect(encodeJson(afterDisconnect)).not.toContain("PRIVATE-OWNER-");
+        expect(afterDisconnect.some((event) => event.type === "content.delta")).toBe(false);
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+  it.effect("cancels a pending private secret before aborting the Pi turn", () =>
+    Effect.gen(function* () {
+      const jarvisRoot = makeFakeJarvisRoot();
+      const threadId = ThreadId.make("private-interrupt-thread");
+      const clientId = "private-interrupt-client";
+      const requested = Promise.withResolvers<{
+        requestId: string;
+        epoch: number;
+      }>();
+      const frames: { kind: string }[] = [];
+      const disconnect = ownerPrivateChannel.connect(clientId);
+      ownerPrivateChannel.subscribe(clientId, (frame) => {
+        frames.push(frame);
+        if (frame.kind === "conceal")
+          ownerPrivateChannel.acknowledge(clientId, frame.threadId, frame.epoch);
+        if (frame.kind === "secret") requested.resolve(frame);
+      });
+      ownerPrivateChannel.claim(threadId, clientId);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          disconnect();
+          NodeFS.rmSync(jarvisRoot, { recursive: true, force: true });
+        }),
+      );
+      const adapter = yield* makePiAdapter(decodeSettings({ jarvisProjectPath: jarvisRoot }), {
+        instanceId: ProviderInstanceId.make("private-interrupt-test"),
+      });
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("pi"),
+        cwd: jarvisRoot,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "private-unlock" });
+      const request = yield* Effect.promise(() => requested.promise);
+      yield* adapter.interruptTurn(threadId);
+      expect(frames.some((frame) => frame.kind === "cancel")).toBe(true);
+      expect(() =>
+        ownerPrivateChannel.respond(
+          clientId,
+          threadId,
+          request.requestId,
+          request.epoch,
+          "private-password",
+        ),
+      ).toThrow();
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
   it.effect(
     "rejects private requests immediately without publishing a password question or private content",

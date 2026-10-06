@@ -25,7 +25,20 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { EnvironmentRpcRequestObserver, request, runStream, subscribe } from "./client.ts";
+import {
+  EnvironmentRpcRequestObserver,
+  request,
+  runStream,
+  subscribe,
+  subscribeDynamic,
+} from "./client.ts";
+import { ThreadId, type OwnerPrivateFrame } from "@t3tools/contracts";
+import {
+  beginOwnerPrivateSession,
+  isOwnerPrivateConcealed,
+  receiveOwnerPrivateFrame,
+  revokeOwnerPrivatePresentation,
+} from "../state/ownerPrivate.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -77,6 +90,88 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it.effect(
+    "conceals a restored private workspace on transport loss and accepts a fresh server epoch",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = TARGET.environmentId;
+        const threadId = ThreadId.make("reconnect-private-thread");
+        const firstEvents = yield* Queue.unbounded<typeof OwnerPrivateFrame.Type>();
+        const secondEvents = yield* Queue.unbounded<typeof OwnerPrivateFrame.Type>();
+        const transportLoss = yield* Queue.unbounded<void>();
+        const ended = yield* Queue.unbounded<void>();
+        const firstClient = {
+          [WS_METHODS.ownerPrivateSubscribe]: () =>
+            Stream.merge(
+              Stream.fromQueue(firstEvents),
+              Stream.fromEffect(
+                Queue.take(transportLoss).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new RpcClientError.RpcClientError({
+                        reason: new RpcClientError.RpcClientDefect({
+                          message: "socket closed",
+                          cause: "socket closed",
+                        }),
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        } as unknown as WsRpcProtocolClient;
+        const secondClient = {
+          [WS_METHODS.ownerPrivateSubscribe]: () => Stream.fromQueue(secondEvents),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, supervisor } = yield* makeHarness();
+        const delivered = yield* Queue.unbounded<typeof OwnerPrivateFrame.Type>();
+        const subscription = yield* subscribeDynamic(
+          WS_METHODS.ownerPrivateSubscribe,
+          () =>
+            Effect.sync(() => {
+              beginOwnerPrivateSession(environmentId);
+              return {};
+            }),
+          {
+            onSubscriptionEnd: Effect.sync(() =>
+              revokeOwnerPrivatePresentation(environmentId),
+            ).pipe(Effect.andThen(Queue.offer(ended, undefined))),
+          },
+        ).pipe(
+          Stream.runForEach((frame) =>
+            Effect.sync(() => receiveOwnerPrivateFrame(environmentId, frame)).pipe(
+              Effect.andThen(Queue.offer(delivered, frame)),
+            ),
+          ),
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        );
+        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+        for (const kind of ["conceal", "secret", "restore"] as const) {
+          yield* Queue.offer(firstEvents, { threadId, requestId: "old-request", epoch: 8, kind });
+          yield* Queue.take(delivered);
+        }
+        expect(isOwnerPrivateConcealed(environmentId, threadId)).toBe(false);
+        yield* Queue.offer(transportLoss, undefined);
+        yield* Queue.take(ended);
+        expect(isOwnerPrivateConcealed(environmentId, threadId)).toBe(true);
+        // A previously concealed server can restart its in-process epoch counter.
+        receiveOwnerPrivateFrame(environmentId, {
+          threadId,
+          requestId: "conceal",
+          epoch: 9,
+          kind: "conceal",
+        });
+        yield* SubscriptionRef.set(activeSession, Option.none());
+        yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+        for (const kind of ["conceal", "secret", "restore"] as const) {
+          yield* Queue.offer(secondEvents, { threadId, requestId: "new-request", epoch: 1, kind });
+          yield* Queue.take(delivered);
+        }
+        expect(isOwnerPrivateConcealed(environmentId, threadId)).toBe(false);
+        yield* Fiber.interrupt(subscription);
+      }),
+  );
   it.effect("observes unary requests until they complete", () =>
     Effect.gen(function* () {
       const observations: string[] = [];

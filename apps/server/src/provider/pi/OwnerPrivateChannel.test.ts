@@ -3,6 +3,63 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { OwnerPrivateChannel, type OwnerPrivateFrame } from "./OwnerPrivateChannel.ts";
 
 describe("Owner private channel", () => {
+  it("does not conceal an ordinary provider claim on reconnect or owner disconnect", () => {
+    const channel = new OwnerPrivateChannel();
+    const thread = ThreadId.make("ordinary-provider-thread");
+    const disconnect = channel.connect("ordinary-owner");
+    channel.subscribe("ordinary-owner", () => {});
+    channel.claim(thread, "ordinary-owner");
+    const frames: OwnerPrivateFrame[] = [];
+    channel.connect("reconnected-client");
+    channel.subscribe("reconnected-client", (frame) => frames.push(frame));
+    expect(frames).toEqual([]);
+    disconnect();
+    expect(channel.concealed(thread)).toBe(false);
+    expect(frames).toEqual([]);
+  });
+
+  it("does not spend private thread capacity on ordinary claims", () => {
+    const channel = new OwnerPrivateChannel();
+    const disconnect = channel.connect("ordinary-capacity-owner");
+    channel.subscribe("ordinary-capacity-owner", () => {});
+    for (let index = 0; index < 1024; index++)
+      channel.claim(ThreadId.make(`ordinary-capacity-${index}`), "ordinary-capacity-owner");
+    expect(() =>
+      channel.claim(ThreadId.make("private-capacity"), "ordinary-capacity-owner"),
+    ).not.toThrow();
+    disconnect();
+    channel.connect("next-capacity-owner");
+    channel.subscribe("next-capacity-owner", () => {});
+    expect(() =>
+      channel.claim(ThreadId.make("next-capacity"), "next-capacity-owner"),
+    ).not.toThrow();
+  });
+
+  it("rejects a secret when a new client has not concealed the current epoch", async () => {
+    const channel = new OwnerPrivateChannel();
+    const thread = ThreadId.make("late-client-thread");
+    channel.connect("late-client-owner");
+    channel.subscribe("late-client-owner", (frame) => {
+      if (frame.kind === "conceal")
+        channel.acknowledge("late-client-owner", frame.threadId, frame.epoch);
+    });
+    channel.claim(thread, "late-client-owner");
+    expect(await channel.conceal(thread)).toBe(true);
+    const secret = channel.secret(thread, "late-client-request");
+    channel.connect("late-client-unconcealed");
+    expect(() =>
+      channel.respond(
+        "late-client-owner",
+        thread,
+        "late-client-request",
+        channel.epoch(thread),
+        "PRIVATE-PASSWORD",
+      ),
+    ).toThrow();
+    channel.lock(thread);
+    expect(await secret).toBeUndefined();
+  });
+
   it("requires concealment from every connected client and sends a secret only to the claiming connection", async () => {
     const channel = new OwnerPrivateChannel(),
       thread = ThreadId.make("thread");

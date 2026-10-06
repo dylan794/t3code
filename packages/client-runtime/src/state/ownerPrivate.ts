@@ -10,7 +10,7 @@ import * as Stream from "effect/Stream";
 import type { Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { EnvironmentCacheStore, type ConnectionPersistenceError } from "../platform/persistence.ts";
-import { request, subscribe } from "../rpc/client.ts";
+import { request, subscribeDynamic } from "../rpc/client.ts";
 import { createEnvironmentCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
 
 type Frame = typeof OwnerPrivateFrame.Type;
@@ -87,6 +87,16 @@ export function revokeOwnerPrivatePresentation(environmentId: EnvironmentId): vo
   }
   for (const listener of listeners) listener();
 }
+export function beginOwnerPrivateSession(environmentId: EnvironmentId): void {
+  revokeOwnerPrivatePresentation(environmentId);
+  for (const identity of volatileThreads) {
+    if ((JSON.parse(identity) as [EnvironmentId, ThreadId])[0] !== environmentId) continue;
+    locks.set(identity, 0);
+    const pending = pendingFrames.get(identity);
+    if (pending) pendingFrames.set(identity, { ...pending, epoch: 0, requestId: "disconnected" });
+  }
+  requiredPurges.delete(environmentId);
+}
 export function registerOwnerPrivatePurger(
   environmentId: EnvironmentId,
   purge: Effect.Effect<void, ConnectionPersistenceError>,
@@ -107,7 +117,17 @@ export function createOwnerPrivateAtoms<R, E>(
     label: "owner-private-channel",
     idleTtlMs: 0,
     subscribe: (input: { readonly environmentId: EnvironmentId }) =>
-      subscribe(WS_METHODS.ownerPrivateSubscribe, {}).pipe(
+      subscribeDynamic(
+        WS_METHODS.ownerPrivateSubscribe,
+        () =>
+          Effect.sync(() => {
+            beginOwnerPrivateSession(input.environmentId);
+            return {};
+          }),
+        {
+          onSubscriptionEnd: Effect.sync(() => revokeOwnerPrivatePresentation(input.environmentId)),
+        },
+      ).pipe(
         Stream.tap((frame) =>
           Effect.gen(function* () {
             // Capture cleanup handles before notifying React. Removing the

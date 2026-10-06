@@ -39,8 +39,9 @@ export class OwnerPrivateChannel {
       this.clients.delete(clientId);
       for (const [threadId, state] of this.threads) {
         if (state.ownerClient === clientId) {
-          this.lock(threadId);
+          if (state.epoch > 0) this.lock(threadId);
           delete state.ownerClient;
+          if (state.epoch === 0) this.threads.delete(threadId);
         }
         this.completeAcknowledgment(threadId);
       }
@@ -51,16 +52,21 @@ export class OwnerPrivateChannel {
     if (!client || client.deliver) throw new Error("Private channel unavailable");
     client.deliver = deliver;
     for (const [threadId, state] of this.threads)
-      deliver({ kind: "conceal", threadId, requestId: "conceal", epoch: state.epoch });
+      if (state.epoch > 0)
+        deliver({ kind: "conceal", threadId, requestId: "conceal", epoch: state.epoch });
     return () => {
       delete client.deliver;
       client.acknowledged.clear();
       for (const [threadId, state] of this.threads)
-        if (state.ownerClient === clientId) this.lock(threadId);
+        if (state.ownerClient === clientId && state.epoch > 0) this.lock(threadId);
     };
   }
   claim(threadId: ThreadId, clientId: string): void {
-    if (!this.clients.get(clientId)?.deliver || this.threads.size >= 1024)
+    if (
+      !this.clients.get(clientId)?.deliver ||
+      (!this.threads.has(threadId) &&
+        [...this.threads.values()].filter((state) => state.epoch > 0).length >= 1024)
+    )
       throw new Error("Private channel unavailable");
     const state = this.threads.get(threadId);
     if (state?.ownerClient && state.ownerClient !== clientId)
@@ -75,6 +81,18 @@ export class OwnerPrivateChannel {
   }
   epoch(threadId: ThreadId): number {
     return this.threads.get(threadId)?.epoch ?? 0;
+  }
+  acknowledged(threadId: ThreadId, clientId: string): boolean {
+    const state = this.threads.get(threadId);
+    return (
+      !!state &&
+      state.epoch > 0 &&
+      state.ownerClient === clientId &&
+      this.clients.has(clientId) &&
+      [...this.clients.values()].every(
+        (client) => !!client.deliver && client.acknowledged.get(threadId) === state.epoch,
+      )
+    );
   }
   registerPi(threadId: ThreadId): void {
     const state = this.threads.get(threadId);
@@ -198,6 +216,7 @@ export class OwnerPrivateChannel {
       state?.ownerClient !== clientId ||
       pending.epoch !== epoch ||
       state.epoch !== epoch ||
+      (value !== undefined && !this.acknowledged(threadId, clientId)) ||
       (value !== undefined &&
         (value.length > 256 ||
           [...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)))

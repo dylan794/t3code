@@ -113,7 +113,7 @@ import { ownerPrivateChannel } from "./provider/pi/OwnerPrivateChannel.ts";
 import {
   presentShell,
   presentShellThread,
-  presentThread,
+  presentThreadSnapshot,
   permittedThread,
   rememberPiInstances,
 } from "./provider/pi/OwnerThreadPresentation.ts";
@@ -576,10 +576,7 @@ const makeWsRpcLayer = (
                         if (frame.kind === "snapshot")
                           return {
                             ...frame,
-                            snapshot: {
-                              ...frame.snapshot,
-                              thread: await presentThread(frame.snapshot.thread, privateClientId),
-                            },
+                            snapshot: await presentThreadSnapshot(frame.snapshot, privateClientId),
                           } as A;
                         const shell = await Effect.runPromise(
                           projectionSnapshotQuery.getThreadShellById(privateThreadId),
