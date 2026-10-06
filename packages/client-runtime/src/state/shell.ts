@@ -2,6 +2,7 @@ import {
   isOwnerPrivateConcealed,
   isOwnerPrivateVolatile,
   registerOwnerPrivatePurger,
+  redactOwnerPrivateShell,
 } from "./ownerPrivate.ts";
 import {
   ORCHESTRATION_WS_METHODS,
@@ -169,7 +170,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const applyItem = Effect.fn("EnvironmentShellState.applyItem")(function* (
     item: OrchestrationShellStreamItem,
   ) {
-    if (isOwnerPrivateConcealed(environmentId)) return;
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -181,7 +181,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     }
 
     const current = yield* SubscriptionRef.get(state);
-    const nextSnapshot =
+    const receivedSnapshot =
       item.kind === "snapshot"
         ? item.snapshot
         : Option.match(current.snapshot, {
@@ -191,9 +191,10 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
                 ? applyShellStreamEvent(snapshot, item)
                 : snapshot,
           });
-    if (nextSnapshot === null) {
+    if (receivedSnapshot === null) {
       return;
     }
+    const nextSnapshot = redactOwnerPrivateShell(environmentId, receivedSnapshot);
 
     const waiting = yield* Ref.get(awaitingCompletion);
     yield* SubscriptionRef.set(state, {

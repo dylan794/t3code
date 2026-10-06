@@ -110,11 +110,9 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { ownerPrivateChannel } from "./provider/pi/OwnerPrivateChannel.ts";
+import { revokeJarvisOwner } from "./provider/pi/JarvisOwnerCore.ts";
 import {
-  presentShell,
-  presentShellThread,
-  presentThreadSnapshot,
-  permittedThread,
+  makeDurableOwnerPresentation,
   rememberPiInstances,
 } from "./provider/pi/OwnerThreadPresentation.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -405,6 +403,13 @@ const makeWsRpcLayer = (
       const disconnectPrivate = ownerPrivateChannel.connect(privateClientId);
       yield* Effect.addFinalizer(() => Effect.sync(disconnectPrivate));
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const {
+        presentShell,
+        presentShellThread,
+        presentThreadSnapshot,
+        permittedThread,
+        validateDestination,
+      } = yield* makeDurableOwnerPresentation;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -414,14 +419,15 @@ const makeWsRpcLayer = (
         clientOrigin.surface !== undefined || clientOrigin.appVersion !== undefined;
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,
-      ) => {
-        if (command.type === "thread.turn.start")
-          ownerPrivateChannel.tryClaim(command.threadId, privateClientId);
-        return orchestrationEngine.dispatch(
-          command,
-          hasClientOrigin ? { origin: clientOrigin } : undefined,
-        );
-      };
+      ) =>
+        Effect.gen(function* () {
+          if (command.type === "thread.turn.start")
+            ownerPrivateChannel.tryClaim(command.threadId, privateClientId);
+          return yield* orchestrationEngine.dispatch(
+            command,
+            hasClientOrigin ? { origin: clientOrigin } : undefined,
+          );
+        });
       const originProps = clientOriginAnalyticsProps(clientOrigin);
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
@@ -1116,8 +1122,6 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
-        if (normalizedCommand.type === "thread.turn.start")
-          ownerPrivateChannel.tryClaim(normalizedCommand.threadId, privateClientId);
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
@@ -1127,8 +1131,33 @@ const makeWsRpcLayer = (
                 ),
               );
 
+        const guardedDispatch = Effect.gen(function* () {
+          if (
+            normalizedCommand.type === "thread.turn.start" ||
+            normalizedCommand.type === "thread.create" ||
+            (normalizedCommand.type === "thread.meta.update" && normalizedCommand.modelSelection)
+          ) {
+            const existing = yield* projectionSnapshotQuery.getThreadShellById(
+              normalizedCommand.threadId,
+            );
+            const selection =
+              normalizedCommand.modelSelection ??
+              (normalizedCommand.type === "thread.turn.start"
+                ? normalizedCommand.bootstrap?.createThread?.modelSelection
+                : undefined) ??
+              (Option.isSome(existing) ? existing.value.modelSelection : undefined);
+            const settings = yield* serverSettings.getSettings;
+            const driver = selection
+              ? settings.providerInstances[selection.instanceId]?.driver
+              : undefined;
+            yield* validateDestination(normalizedCommand, driver);
+          }
+          if (normalizedCommand.type === "thread.turn.start")
+            ownerPrivateChannel.tryClaim(normalizedCommand.threadId, privateClientId);
+          return yield* dispatchEffect;
+        });
         return startup
-          .enqueueCommand(dispatchEffect)
+          .enqueueCommand(guardedDispatch)
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
@@ -1205,7 +1234,14 @@ const makeWsRpcLayer = (
               try: () => {
                 if (input.kind === "ack")
                   ownerPrivateChannel.acknowledge(privateClientId, input.threadId, input.epoch);
-                else
+                else if (input.kind === "leave") {
+                  for (const threadId of ownerPrivateChannel.leave(
+                    privateClientId,
+                    input.threadId,
+                    input.epoch,
+                  ))
+                    revokeJarvisOwner(threadId);
+                } else
                   ownerPrivateChannel.respond(
                     privateClientId,
                     input.threadId,

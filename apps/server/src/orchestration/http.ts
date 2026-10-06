@@ -19,9 +19,7 @@ import {
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import {
-  presentShell,
-  presentThread,
-  presentThreadSnapshot,
+  makeDurableOwnerPresentation,
   rememberPiInstances,
 } from "../provider/pi/OwnerThreadPresentation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -31,6 +29,8 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const { presentShell, presentThread, presentThreadSnapshot, validateDestination } =
+      yield* makeDurableOwnerPresentation;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const serverSettings = Context.getOption(yield* Effect.context<never>(), ServerSettingsService);
     if (Option.isSome(serverSettings))
@@ -109,6 +109,30 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
             Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
           );
+          if (
+            normalizedCommand.type === "thread.turn.start" ||
+            normalizedCommand.type === "thread.create" ||
+            (normalizedCommand.type === "thread.meta.update" && normalizedCommand.modelSelection)
+          ) {
+            yield* Effect.gen(function* () {
+              const existing = yield* projectionSnapshotQuery.getThreadShellById(
+                normalizedCommand.threadId,
+              );
+              const selection =
+                normalizedCommand.modelSelection ??
+                (normalizedCommand.type === "thread.turn.start"
+                  ? normalizedCommand.bootstrap?.createThread?.modelSelection
+                  : undefined) ??
+                (Option.isSome(existing) ? existing.value.modelSelection : undefined);
+              const settings = Option.isSome(serverSettings)
+                ? yield* serverSettings.value.getSettings
+                : undefined;
+              const driver = selection
+                ? settings?.providerInstances[selection.instanceId]?.driver
+                : undefined;
+              yield* validateDestination(normalizedCommand, driver);
+            }).pipe(Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")));
+          }
           return yield* orchestrationEngine
             .dispatch(normalizedCommand)
             .pipe(

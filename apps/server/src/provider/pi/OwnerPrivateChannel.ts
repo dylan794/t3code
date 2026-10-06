@@ -10,6 +10,7 @@ export type OwnerPrivateFrame = {
 interface Client {
   deliver?: (frame: OwnerPrivateFrame) => void;
   acknowledged: Map<ThreadId, number>;
+  withdrawn: Set<ThreadId>;
 }
 interface Pending {
   threadId: ThreadId;
@@ -34,7 +35,7 @@ export class OwnerPrivateChannel {
   connect(clientId: string): () => void {
     if (this.clients.size >= 256 || this.clients.has(clientId))
       throw new Error("Private channel unavailable");
-    this.clients.set(clientId, { acknowledged: new Map() });
+    this.clients.set(clientId, { acknowledged: new Map(), withdrawn: new Set() });
     return () => {
       this.clients.delete(clientId);
       for (const [threadId, state] of this.threads) {
@@ -52,7 +53,7 @@ export class OwnerPrivateChannel {
     if (!client || client.deliver) throw new Error("Private channel unavailable");
     client.deliver = deliver;
     for (const [threadId, state] of this.threads)
-      if (state.epoch > 0)
+      if (state.epoch > 0 && !client.withdrawn.has(threadId))
         deliver({ kind: "conceal", threadId, requestId: "conceal", epoch: state.epoch });
     return () => {
       delete client.deliver;
@@ -117,7 +118,25 @@ export class OwnerPrivateChannel {
     if (!state) return;
     state.epoch++;
     for (const client of this.clients.values())
-      client.deliver?.({ kind: "conceal", threadId, requestId: "conceal", epoch: state.epoch });
+      if (!client.withdrawn.has(threadId))
+        client.deliver?.({ kind: "conceal", threadId, requestId: "conceal", epoch: state.epoch });
+  }
+  /** Withdraw this connection's presentation proofs until the next private request. */
+  leave(clientId: string, threadId: ThreadId, epoch: number): ThreadId[] {
+    const client = this.clients.get(clientId);
+    if (!client?.deliver || this.threads.get(threadId)?.epoch !== epoch)
+      throw new Error("Private channel unavailable");
+    client.acknowledged.clear();
+    const owned: ThreadId[] = [];
+    for (const [id, state] of this.threads) {
+      client.withdrawn.add(id);
+      if (state.ownerClient !== clientId) continue;
+      this.cancel(id);
+      delete state.ownerClient;
+      if (state.epoch > 0) owned.push(id);
+      else this.threads.delete(id);
+    }
+    return owned;
   }
   tryClaim(threadId: ThreadId, clientId: string): void {
     try {
@@ -129,12 +148,13 @@ export class OwnerPrivateChannel {
   acknowledge(clientId: string, threadId: ThreadId, epoch: number): void {
     const client = this.clients.get(clientId),
       state = this.threads.get(threadId);
-    if (!client?.deliver || !state || state.epoch !== epoch)
+    if (!client?.deliver || !state || state.epoch !== epoch || client.withdrawn.has(threadId))
       throw new Error("Private channel unavailable");
     client.acknowledged.set(threadId, epoch);
     this.completeAcknowledgment(threadId);
   }
   async conceal(threadId: ThreadId): Promise<boolean> {
+    for (const client of this.clients.values()) client.withdrawn.delete(threadId);
     this.cancel(threadId);
     const previous = this.threads.get(threadId);
     const state = {

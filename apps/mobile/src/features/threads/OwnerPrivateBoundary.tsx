@@ -4,6 +4,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   createOwnerPrivateAtoms,
   ownerPrivatePresentation,
+  dismissOwnerPrivatePresentation,
 } from "@t3tools/client-runtime/state/owner-private";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useLayoutEffect, useState, useSyncExternalStore, type PropsWithChildren } from "react";
@@ -27,8 +28,10 @@ export function OwnerPrivateBoundary({ children }: PropsWithChildren) {
   );
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useLayoutEffect(() => {
     setValue("");
+    setError(null);
     if (frame?.kind !== "conceal") return;
     void Promise.all([
       clearComposerDraftsEnvironment(frame.environmentId),
@@ -45,13 +48,17 @@ export function OwnerPrivateBoundary({ children }: PropsWithChildren) {
       }),
     );
   }, [frame]);
-  const respond = async (kind: "secret" | "cancel") => {
+  const respond = async (kind: "secret" | "cancel" | "leave") => {
     if (!frame || sending) return;
+    if (kind === "leave" && frame.requestId === "disconnected") {
+      dismissOwnerPrivatePresentation(frame);
+      return;
+    }
     const secret = value;
     setValue("");
     setSending(true);
     try {
-      await privateAtoms.respond.run(appAtomRegistry, {
+      const result = await privateAtoms.respond.run(appAtomRegistry, {
         environmentId: frame.environmentId,
         input: {
           threadId: frame.threadId,
@@ -61,6 +68,11 @@ export function OwnerPrivateBoundary({ children }: PropsWithChildren) {
           ...(kind === "secret" ? { value: secret } : {}),
         },
       });
+      if (result._tag !== "Success" || !result.value.accepted)
+        throw new Error("Private channel unavailable");
+      if (kind === "leave") dismissOwnerPrivatePresentation(frame);
+    } catch {
+      setError("Could not complete the private request. Retry after the connection is available.");
     } finally {
       setSending(false);
     }
@@ -83,6 +95,7 @@ export function OwnerPrivateBoundary({ children }: PropsWithChildren) {
           }}
         >
           <Text>Private Owner input</Text>
+          {error && <Text accessibilityRole="alert">{error}</Text>}
           {frame.kind === "secret" ? (
             <>
               <TextInput
@@ -105,7 +118,13 @@ export function OwnerPrivateBoundary({ children }: PropsWithChildren) {
               </Pressable>
             </>
           ) : (
-            <Text>The workspace is concealed for this private request.</Text>
+            <>
+              <Text>The workspace is concealed for this private request.</Text>
+              <Text>Return to the workspace to start a fresh Pi thread and run /owner unlock.</Text>
+              <Pressable disabled={sending} onPress={() => void respond("leave")}>
+                <Text>Return to workspace</Text>
+              </Pressable>
+            </>
           )}
         </View>
       ) : (

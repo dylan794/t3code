@@ -11,6 +11,6 @@ export const OwnerPrivateResponse = Schema.Struct({
   threadId: ThreadId,
   requestId: Schema.String,
   epoch: Schema.Int,
-  kind: Schema.Literals(["ack", "secret", "cancel"]),
+  kind: Schema.Literals(["ack", "secret", "cancel", "leave"]),
   value: Schema.optional(Schema.String),
 });

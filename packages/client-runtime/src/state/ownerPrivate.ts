@@ -2,6 +2,7 @@ import {
   WS_METHODS,
   type EnvironmentId,
   type ThreadId,
+  type OrchestrationShellSnapshot,
   OwnerPrivateFrame,
   OwnerPrivateResponse,
 } from "@t3tools/contracts";
@@ -51,6 +52,54 @@ export const ownerPrivatePresentation = {
     };
   },
 };
+/** Leave the private prompt without granting access to its previous content. */
+export function dismissOwnerPrivatePresentation(expected: PrivatePresentation): void {
+  if (
+    !presentation ||
+    presentation.kind === "secret" ||
+    presentation.environmentId !== expected.environmentId ||
+    presentation.threadId !== expected.threadId ||
+    presentation.requestId !== expected.requestId ||
+    presentation.epoch !== expected.epoch ||
+    presentation.kind !== expected.kind
+  )
+    return;
+  for (const identity of pendingFrames.keys()) {
+    if ((JSON.parse(identity) as [EnvironmentId, ThreadId])[0] === presentation.environmentId)
+      pendingFrames.delete(identity);
+  }
+  presentation = Array.from(pendingFrames.values()).at(-1) ?? null;
+  for (const listener of listeners) listener();
+}
+
+/** A shell frame already in flight when conceal arrived must remain safe. */
+export function redactOwnerPrivateShell(
+  environmentId: EnvironmentId,
+  snapshot: OrchestrationShellSnapshot,
+): OrchestrationShellSnapshot {
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      !isOwnerPrivateConcealed(environmentId, thread.id)
+        ? thread
+        : {
+            ...thread,
+            title: "Locked Jarvis thread",
+            branch: null,
+            worktreePath: null,
+            latestTurn: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+            session: null,
+            titleRegeneration: null,
+            planProgress: null,
+            backgroundLiveness: null,
+          },
+    ),
+  };
+}
 export function receiveOwnerPrivateFrame(environmentId: EnvironmentId, frame: Frame): void {
   const identity = key(environmentId, frame.threadId);
   const epoch = locks.get(identity);

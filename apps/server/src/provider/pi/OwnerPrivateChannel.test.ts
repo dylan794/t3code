@@ -3,6 +3,35 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { OwnerPrivateChannel, type OwnerPrivateFrame } from "./OwnerPrivateChannel.ts";
 
 describe("Owner private channel", () => {
+  it("withdraws presentation proofs and ownership until a fresh private request", async () => {
+    const channel = new OwnerPrivateChannel();
+    const thread = ThreadId.make("leave-private");
+    const frames: OwnerPrivateFrame[] = [];
+    channel.connect("leaving-owner");
+    channel.subscribe("leaving-owner", (frame) => {
+      frames.push(frame);
+      if (frame.kind === "conceal") channel.acknowledge("leaving-owner", thread, frame.epoch);
+    });
+    channel.claim(thread, "leaving-owner");
+    const ordinary = ThreadId.make("ordinary-while-leaving");
+    channel.claim(ordinary, "leaving-owner");
+    expect(await channel.conceal(thread)).toBe(true);
+    const secret = channel.secret(thread, "leave-secret");
+    expect(() => channel.leave("leaving-owner", thread, channel.epoch(thread) - 1)).toThrow();
+    expect(channel.leave("leaving-owner", thread, channel.epoch(thread))).toEqual([thread]);
+    expect(await secret).toBeUndefined();
+    expect(channel.clientFor(thread)).toBeUndefined();
+    expect(channel.concealed(ordinary)).toBe(false);
+    expect(channel.clientFor(ordinary)).toBeUndefined();
+    expect(channel.acknowledged(thread, "leaving-owner")).toBe(false);
+    expect(() => channel.acknowledge("leaving-owner", thread, channel.epoch(thread))).toThrow();
+    const count = frames.length;
+    channel.lock(thread);
+    expect(frames).toHaveLength(count);
+    channel.claim(thread, "leaving-owner");
+    expect(await channel.conceal(thread)).toBe(true);
+    expect(frames).toHaveLength(count + 1);
+  });
   it("does not conceal an ordinary provider claim on reconnect or owner disconnect", () => {
     const channel = new OwnerPrivateChannel();
     const thread = ThreadId.make("ordinary-provider-thread");

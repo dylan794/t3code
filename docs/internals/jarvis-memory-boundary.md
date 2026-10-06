@@ -46,6 +46,25 @@ its pending secret before sending the provider abort. Private stream teardown
 conceals restored client content on transport loss, before reconnect; a new
 server session resets only the epoch comparison and retains the content lock.
 
+The private dialog's Return to workspace action withdraws this connection's
+concealment acknowledgements and releases its private claims before remounting
+ordinary content. It revokes only private grants, including when the connection
+also owns ordinary provider threads. A disconnected client can return locally
+because its server connection has already lost its presentation authority.
+Returning retains per-thread locks and volatile cache policy. The shell accepts
+ordinary thread metadata and redacts locked entries, including frames that were
+already in flight. A late leave response cannot dismiss a newer private request.
+A new Pi request conceals the workspace again and requires fresh acknowledgements.
+
+Migration 42 records sticky private thread identities. Existing Pi sessions and
+archived session events backfill the identities; database triggers retain them
+after provider replacement or session deletion. Selecting Pi also marks the
+thread before command dispatch. Both HTTP and WebSocket command entry points
+reject sending marked history to another provider, including a turn that omits
+its model selection. Presentation uses the durable marker after a server restart
+and fails closed if its database query fails. A separate ordinary thread is
+required when changing away from Pi.
+
 HTTP snapshots, thread search, websocket snapshots, replay and live thread
 events redact locked Pi thread content. Private restored content stays volatile
 in clients and is not written to their ordinary caches. Ordinary structured
