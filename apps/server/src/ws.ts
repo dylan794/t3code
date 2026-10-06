@@ -109,6 +109,12 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
+import { ownerPrivateChannel } from "./provider/pi/OwnerPrivateChannel.ts";
+import { revokeJarvisOwner } from "./provider/pi/JarvisOwnerCore.ts";
+import {
+  makeDurableOwnerPresentation,
+  rememberPiInstances,
+} from "./provider/pi/OwnerThreadPresentation.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -393,7 +399,17 @@ const makeWsRpcLayer = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
+      const privateClientId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const disconnectPrivate = ownerPrivateChannel.connect(privateClientId);
+      yield* Effect.addFinalizer(() => Effect.sync(disconnectPrivate));
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const {
+        presentShell,
+        presentShellThread,
+        presentThreadSnapshot,
+        permittedThread,
+        validateDestination,
+      } = yield* makeDurableOwnerPresentation;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -404,10 +420,14 @@ const makeWsRpcLayer = (
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,
       ) =>
-        orchestrationEngine.dispatch(
-          command,
-          hasClientOrigin ? { origin: clientOrigin } : undefined,
-        );
+        Effect.gen(function* () {
+          if (command.type === "thread.turn.start")
+            ownerPrivateChannel.tryClaim(command.threadId, privateClientId);
+          return yield* orchestrationEngine.dispatch(
+            command,
+            hasClientOrigin ? { origin: clientOrigin } : undefined,
+          );
+        });
       const originProps = clientOriginAnalyticsProps(clientOrigin);
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
@@ -442,6 +462,7 @@ const makeWsRpcLayer = (
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      rememberPiInstances((yield* serverSettings.getSettings).providerInstances);
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -532,10 +553,53 @@ const makeWsRpcLayer = (
           EffectContext
         >,
         traceAttributes?: Readonly<Record<string, unknown>>,
+        privateThreadId?: ThreadId,
       ) =>
         instrumentRpcStreamEffect(
           method,
-          authorizeEffect(requiredScopeForRpcMethod(method), effect),
+          authorizeEffect(
+            requiredScopeForRpcMethod(method),
+            effect.pipe(
+              Effect.map((stream) =>
+                stream.pipe(
+                  Stream.mapEffect((item) =>
+                    Effect.promise(async () => {
+                      if (method === ORCHESTRATION_WS_METHODS.subscribeShell) {
+                        const frame = item as OrchestrationShellStreamItem;
+                        if (frame.kind === "snapshot")
+                          return {
+                            ...frame,
+                            snapshot: await presentShell(frame.snapshot, privateClientId),
+                          } as A;
+                        if (frame.kind === "thread-upserted")
+                          return {
+                            ...frame,
+                            thread: await presentShellThread(frame.thread, privateClientId),
+                          } as A;
+                      }
+                      if (privateThreadId) {
+                        const frame = item as OrchestrationThreadStreamItem;
+                        if (frame.kind === "snapshot")
+                          return {
+                            ...frame,
+                            snapshot: await presentThreadSnapshot(frame.snapshot, privateClientId),
+                          } as A;
+                        const shell = await Effect.runPromise(
+                          projectionSnapshotQuery.getThreadShellById(privateThreadId),
+                        );
+                        if (
+                          Option.isNone(shell) ||
+                          !(await permittedThread(shell.value, privateClientId))
+                        )
+                          return { kind: "synchronized" } as A;
+                      }
+                      return item;
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          ),
           traceAttributes,
         );
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
@@ -1067,8 +1131,33 @@ const makeWsRpcLayer = (
                 ),
               );
 
+        const guardedDispatch = Effect.gen(function* () {
+          if (
+            normalizedCommand.type === "thread.turn.start" ||
+            normalizedCommand.type === "thread.create" ||
+            (normalizedCommand.type === "thread.meta.update" && normalizedCommand.modelSelection)
+          ) {
+            const existing = yield* projectionSnapshotQuery.getThreadShellById(
+              normalizedCommand.threadId,
+            );
+            const selection =
+              normalizedCommand.modelSelection ??
+              (normalizedCommand.type === "thread.turn.start"
+                ? normalizedCommand.bootstrap?.createThread?.modelSelection
+                : undefined) ??
+              (Option.isSome(existing) ? existing.value.modelSelection : undefined);
+            const settings = yield* serverSettings.getSettings;
+            const driver = selection
+              ? settings.providerInstances[selection.instanceId]?.driver
+              : undefined;
+            yield* validateDestination(normalizedCommand, driver);
+          }
+          if (normalizedCommand.type === "thread.turn.start")
+            ownerPrivateChannel.tryClaim(normalizedCommand.threadId, privateClientId);
+          return yield* dispatchEffect;
+        });
         return startup
-          .enqueueCommand(dispatchEffect)
+          .enqueueCommand(guardedDispatch)
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
@@ -1124,6 +1213,51 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
+        [WS_METHODS.ownerPrivateSubscribe]: () =>
+          authorizeStream(
+            "orchestration:operate",
+            Stream.callback((queue) =>
+              Effect.acquireRelease(
+                Effect.sync(() =>
+                  ownerPrivateChannel.subscribe(privateClientId, (frame) => {
+                    Effect.runFork(Queue.offer(queue, frame));
+                  }),
+                ),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ).pipe(Effect.asVoid),
+            ),
+          ),
+        [WS_METHODS.ownerPrivateRespond]: (input) =>
+          authorizeEffect(
+            "orchestration:operate",
+            Effect.try({
+              try: () => {
+                if (input.kind === "ack")
+                  ownerPrivateChannel.acknowledge(privateClientId, input.threadId, input.epoch);
+                else if (input.kind === "leave") {
+                  for (const threadId of ownerPrivateChannel.leave(
+                    privateClientId,
+                    input.threadId,
+                    input.epoch,
+                  ))
+                    revokeJarvisOwner(threadId);
+                } else
+                  ownerPrivateChannel.respond(
+                    privateClientId,
+                    input.threadId,
+                    input.requestId,
+                    input.epoch,
+                    input.kind === "cancel" ? undefined : input.value,
+                  );
+                return { accepted: true };
+              },
+              catch: () =>
+                new EnvironmentAuthorizationError({
+                  message: "Private channel unavailable",
+                  requiredScope: "orchestration:operate",
+                }),
+            }),
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
@@ -1224,13 +1358,37 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.getWorkflowScript]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getWorkflowScript,
-            readWorkflowScript({ scriptPath: input.scriptPath }),
+            Effect.gen(function* () {
+              const shell = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(Effect.catch(() => Effect.succeed(Option.none())));
+              if (
+                Option.isNone(shell) ||
+                !(yield* Effect.promise(() => permittedThread(shell.value, privateClientId)))
+              )
+                return yield* new EnvironmentAuthorizationError({
+                  message: "Locked thread",
+                  requiredScope: "orchestration:read",
+                });
+              return yield* readWorkflowScript({ scriptPath: input.scriptPath });
+            }),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.getTurnDiff]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getTurnDiff,
             checkpointDiffQuery.getTurnDiff(input).pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  const shell = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
+                  if (
+                    Option.isNone(shell) ||
+                    !(yield* Effect.promise(() => permittedThread(shell.value, privateClientId)))
+                  )
+                    return yield* new OrchestrationGetTurnDiffError({ message: "Locked thread" });
+                  return result;
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetTurnDiffError({
@@ -1245,6 +1403,19 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getFullThreadDiff,
             checkpointDiffQuery.getFullThreadDiff(input).pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  const shell = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
+                  if (
+                    Option.isNone(shell) ||
+                    !(yield* Effect.promise(() => permittedThread(shell.value, privateClientId)))
+                  )
+                    return yield* new OrchestrationGetFullThreadDiffError({
+                      message: "Locked thread",
+                    });
+                  return result;
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetFullThreadDiffError({
@@ -1259,6 +1430,20 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.searchThreads,
             projectionSnapshotQuery.searchThreads(input).pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  const matches = [] as (typeof result.matches)[number][];
+                  for (const match of result.matches) {
+                    const shell = yield* projectionSnapshotQuery.getThreadShellById(match.threadId);
+                    if (
+                      Option.isSome(shell) &&
+                      (yield* Effect.promise(() => permittedThread(shell.value, privateClientId)))
+                    )
+                      matches.push(match);
+                  }
+                  return { matches };
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationSearchThreadsError({
@@ -1380,6 +1565,9 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
             projectionSnapshotQuery.getArchivedShellSnapshot().pipe(
+              Effect.flatMap((snapshot) =>
+                Effect.promise(() => presentShell(snapshot, privateClientId)),
+              ),
               Effect.tapError((cause) =>
                 Effect.logError("orchestration archived shell snapshot load failed", { cause }),
               ),
@@ -1537,6 +1725,7 @@ const makeWsRpcLayer = (
               );
             }),
             { "rpc.aggregate": "orchestration" },
+            input.threadId,
           ),
         [WS_METHODS.serverProbe]: (_input) =>
           observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {

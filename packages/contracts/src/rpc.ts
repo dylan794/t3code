@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import { OwnerPrivateFrame, OwnerPrivateResponse } from "./ownerPrivate.ts";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
@@ -199,6 +200,8 @@ import {
 import { VcsError } from "./vcs.ts";
 
 export const WS_METHODS = {
+  ownerPrivateSubscribe: "owner-private.subscribe",
+  ownerPrivateRespond: "owner-private.respond",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -997,6 +1000,17 @@ export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeReso
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.ownerPrivateSubscribe, {
+    payload: Schema.Struct({}),
+    success: OwnerPrivateFrame,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  }),
+  Rpc.make(WS_METHODS.ownerPrivateRespond, {
+    payload: OwnerPrivateResponse,
+    success: Schema.Struct({ accepted: Schema.Boolean }),
+    error: EnvironmentAuthorizationError,
+  }),
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

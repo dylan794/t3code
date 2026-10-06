@@ -1,3 +1,4 @@
+import { OwnerPrivateBoundary } from "./features/threads/OwnerPrivateBoundary";
 import {
   createPathConfigForStaticNavigation,
   getPathFromState,
@@ -392,15 +393,17 @@ function RootStackLayout(props: {
   const workspacePathname = workspacePathFromState(props.state);
 
   return (
-    <HardwareKeyboardCommandProvider pathname={pathname}>
-      <ThreadOutboxDrainWorker />
-      <ShowcaseCaptureCoordinator pathname={pathname} />
-      <ExistingThreadSettingsRouteProvider>
-        <AdaptiveWorkspaceLayout pathname={workspacePathname}>
-          {props.children}
-        </AdaptiveWorkspaceLayout>
-      </ExistingThreadSettingsRouteProvider>
-    </HardwareKeyboardCommandProvider>
+    <OwnerPrivateBoundary>
+      <HardwareKeyboardCommandProvider pathname={pathname}>
+        <ThreadOutboxDrainWorker />
+        <ShowcaseCaptureCoordinator pathname={pathname} />
+        <ExistingThreadSettingsRouteProvider>
+          <AdaptiveWorkspaceLayout pathname={workspacePathname}>
+            {props.children}
+          </AdaptiveWorkspaceLayout>
+        </ExistingThreadSettingsRouteProvider>
+      </HardwareKeyboardCommandProvider>
+    </OwnerPrivateBoundary>
   );
 }
 

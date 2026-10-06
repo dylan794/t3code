@@ -154,6 +154,10 @@
     "./state/vcs": {
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"
+    },
+    "./state/owner-private": {
+      "types": "./src/state/ownerPrivate.ts",
+      "default": "./src/state/ownerPrivate.ts"
     }
   },
   "scripts": {

@@ -283,7 +283,7 @@ const browserOtlpTracingLayer = Layer.mergeAll(
 
 const makeAuthTestLayer = () =>
   EnvironmentAuth.layer.pipe(
-    Layer.provide(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provide(ServerSecretStore.layer),
   );
 
@@ -6174,6 +6174,97 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "keeps selected Pi history private after a fresh connection and blocks another provider",
+    () =>
+      Effect.gen(function* () {
+        const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+        let dispatches = 0;
+        yield* buildAppUnderTest({
+          layers: {
+            serverSettings: {
+              getSettings: Effect.succeed({
+                ...DEFAULT_SERVER_SETTINGS,
+                providerInstances: {
+                  ...DEFAULT_SERVER_SETTINGS.providerInstances,
+                  pi: { driver: ProviderDriverKind.make("pi") },
+                },
+              }),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+              getThreadDetailSnapshot: () =>
+                Effect.succeed(
+                  Option.some({
+                    snapshotSequence: 1,
+                    thread: { ...thread, title: "PRIVATE-OWNER-TITLE" },
+                  }),
+                ),
+            },
+            orchestrationEngine: {
+              dispatch: () => Effect.sync(() => ({ sequence: ++dispatches })),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.meta.update",
+              commandId: CommandId.make("mark-pi-history"),
+              threadId: defaultThreadId,
+              modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "synthetic" },
+            }),
+          ),
+        );
+        const items = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId: defaultThreadId }).pipe(
+              Stream.take(1),
+              Stream.runCollect,
+            ),
+          ),
+        );
+        assert.equal(items[0]?.kind, "snapshot");
+        if (items[0]?.kind === "snapshot") {
+          assert.equal(items[0].snapshot.thread.title, "Locked Jarvis thread");
+          assert.deepEqual(items[0].snapshot.thread.messages, []);
+        }
+        const rejected = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.turn.start",
+              commandId: CommandId.make("deny-private-history-transfer"),
+              threadId: defaultThreadId,
+              message: {
+                messageId: MessageId.make("synthetic-message"),
+                role: "user",
+                text: "Continue",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdAt: "2026-10-06T00:00:00Z",
+            }),
+          ),
+        ).pipe(Effect.flip);
+        assert.equal(rejected._tag, "OrchestrationDispatchCommandError");
+        const cookie = yield* getAuthenticatedSessionCookieHeader();
+        const httpRejected = yield* HttpClient.post("/api/orchestration/dispatch", {
+          headers: { cookie },
+          body: yield* HttpBody.json({
+            type: "thread.meta.update",
+            commandId: "deny-http-private-transfer",
+            threadId: defaultThreadId,
+            modelSelection: defaultModelSelection,
+          }),
+        });
+        assert.equal(httpRejected.status, 400);
+        assert.equal(dispatches, 1);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("marks a socket thread snapshot as synchronized when requested", () =>

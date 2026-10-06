@@ -45,9 +45,20 @@ export type PiRpcCommand =
   | { readonly type: "switch_session"; readonly sessionPath: string };
 
 export type PiExtensionUIResponse =
+  | {
+      readonly type: "extension_ui_response";
+      readonly id: string;
+      readonly concealed: true;
+      readonly value?: string;
+    }
   | { readonly type: "extension_ui_response"; readonly id: string; readonly value: string }
   | { readonly type: "extension_ui_response"; readonly id: string; readonly confirmed: boolean }
-  | { readonly type: "extension_ui_response"; readonly id: string; readonly cancelled: true };
+  | {
+      readonly type: "extension_ui_response";
+      readonly id: string;
+      readonly cancelled: true;
+      readonly concealed?: false;
+    };
 
 export type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -111,6 +122,12 @@ const PiExtensionUIResponse = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("extension_ui_response"),
     id: Schema.String,
+    concealed: Schema.Literal(true),
+    value: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("extension_ui_response"),
+    id: Schema.String,
     value: Schema.String,
   }),
   Schema.Struct({
@@ -122,6 +139,7 @@ const PiExtensionUIResponse = Schema.Union([
     type: Schema.Literal("extension_ui_response"),
     id: Schema.String,
     cancelled: Schema.Literal(true),
+    concealed: Schema.optional(Schema.Literal(false)),
   }),
 ]);
 

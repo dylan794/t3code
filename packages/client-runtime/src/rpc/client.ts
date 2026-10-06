@@ -40,6 +40,7 @@ export type EnvironmentRpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
+  | typeof WS_METHODS.ownerPrivateSubscribe
   | typeof ORCHESTRATION_WS_METHODS.subscribeShell
   | typeof ORCHESTRATION_WS_METHODS.subscribeThread
   | typeof WS_METHODS.subscribeAuthAccess
@@ -132,6 +133,12 @@ export const request = Effect.fn("EnvironmentRpc.request")(function* <
     "rpc.method": tag,
   });
   const session = yield* currentSession();
+  if (tag === WS_METHODS.ownerPrivateRespond) {
+    const privateMethod = session.client[tag] as (
+      input: EnvironmentRpcInput<TTag>,
+    ) => Effect.Effect<EnvironmentRpcSuccess<TTag>, EnvironmentRpcFailure<TTag>>;
+    return yield* privateMethod(input);
+  }
   const observer = yield* EnvironmentRpcRequestObserver;
   const method = session.client[tag] as (
     input: EnvironmentRpcInput<TTag>,
@@ -168,6 +175,7 @@ export function runStream<TTag extends EnvironmentStreamCommandRpcTag>(
 }
 
 interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
+  readonly onSubscriptionEnd?: Effect.Effect<void>;
   readonly onExpectedFailure?: (
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
@@ -223,6 +231,7 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                         input,
                       });
                       return method(input).pipe(
+                        Stream.ensuring(options?.onSubscriptionEnd ?? Effect.void),
                         Stream.ensuring(completeObservation),
                         Stream.catchCause((cause) => {
                           const hasOnlyExpectedFailures =

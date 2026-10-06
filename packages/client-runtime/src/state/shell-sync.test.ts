@@ -1,5 +1,8 @@
 import {
   EnvironmentId,
+  ThreadId,
+  ProjectId,
+  ProviderInstanceId,
   ORCHESTRATION_WS_METHODS,
   type OrchestrationShellSnapshot,
   type OrchestrationShellStreamItem,
@@ -23,6 +26,7 @@ import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { makeEnvironmentShellState, ShellSnapshotLoader } from "./shell.ts";
+import { receiveOwnerPrivateFrame } from "./ownerPrivate.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -58,6 +62,101 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
 }
 
 describe("environment shell synchronization", () => {
+  it.effect(
+    "loads ordinary navigation after private conceal and redacts late private shell content",
+    () =>
+      Effect.gen(function* () {
+        const target = new PrimaryConnectionTarget({
+          ...TARGET,
+          environmentId: EnvironmentId.make("recovery-shell"),
+        });
+        const privateId = ThreadId.make("concealed-shell-thread");
+        receiveOwnerPrivateFrame(target.environmentId, {
+          threadId: privateId,
+          epoch: 3,
+          requestId: "conceal",
+          kind: "conceal",
+        });
+        const thread = {
+          id: privateId,
+          projectId: ProjectId.make("synthetic-project"),
+          title: "PRIVATE-TITLE",
+          modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "synthetic" },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: "PRIVATE-BRANCH",
+          worktreePath: "PRIVATE-PATH",
+          latestTurn: null,
+          createdAt: "2026-10-06T00:00:00Z",
+          updatedAt: "2026-10-06T00:00:00Z",
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: true,
+          hasPendingUserInput: true,
+          hasActionableProposedPlan: true,
+        };
+        const client = {
+          [ORCHESTRATION_WS_METHODS.subscribeShell]: () => Stream.never,
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target,
+          state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
+            Option.some({ ...PREPARED, target, environmentId: target.environmentId }),
+          ),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const cache = Persistence.EnvironmentCacheStore.of({
+          loadShell: () => Effect.die("Private cache must not be loaded"),
+          saveShell: () => Effect.die("Private shell must not be persisted"),
+          loadThread: () => Effect.succeed(Option.none()),
+          saveThread: () => Effect.void,
+          removeThread: () => Effect.void,
+          loadServerConfig: () => Effect.succeed(Option.none()),
+          saveServerConfig: () => Effect.void,
+          loadVcsRefs: () => Effect.succeed(Option.none()),
+          saveVcsRefs: () => Effect.void,
+          removeVcsRefs: () => Effect.void,
+          clearVcsRefs: () => Effect.void,
+          clear: () => Effect.void,
+        });
+        const snapshot: OrchestrationShellSnapshot = {
+          ...LIVE_SHELL_SNAPSHOT,
+          threads: [
+            thread,
+            {
+              ...thread,
+              id: ThreadId.make("ordinary-shell-thread"),
+              title: "Ordinary work",
+              branch: null,
+              worktreePath: null,
+            },
+          ],
+        };
+        const state = yield* makeEnvironmentShellState().pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+          Effect.provideService(ShellSnapshotLoader, {
+            load: () => Effect.succeed(Option.some(snapshot)),
+          }),
+        );
+        for (let i = 0; i < 100; i++) {
+          if (Option.isSome((yield* SubscriptionRef.get(state)).snapshot)) break;
+          yield* Effect.yieldNow;
+        }
+        const presented = Option.getOrThrow((yield* SubscriptionRef.get(state)).snapshot);
+        expect(presented.threads[0]?.title).toBe("Locked Jarvis thread");
+        expect(presented.threads[1]?.title).toBe("Ordinary work");
+        expect(presented.threads[0]?.branch).toBe(null);
+        expect(presented.threads[0]?.worktreePath).toBe(null);
+      }),
+  );
   it.effect("publishes live state before persistence and preserves it when ready", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();

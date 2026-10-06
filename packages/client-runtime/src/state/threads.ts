@@ -1,4 +1,9 @@
 import {
+  isOwnerPrivateConcealed,
+  isOwnerPrivateVolatile,
+  registerOwnerPrivatePurger,
+} from "./ownerPrivate.ts";
+import {
   ORCHESTRATION_WS_METHODS,
   type EnvironmentId as EnvironmentIdType,
   type OrchestrationThread,
@@ -205,7 +210,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const clientEffects = yield* ThreadClientEffects;
   const environmentId = supervisor.target.environmentId;
-  const cached = yield* cache.loadThread(environmentId, threadId).pipe(
+  const cached = yield* (
+    isOwnerPrivateConcealed(environmentId, threadId)
+      ? Effect.succeed(Option.none<OrchestrationThreadDetailSnapshot>())
+      : cache.loadThread(environmentId, threadId)
+  ).pipe(
     Effect.catch((error) =>
       Effect.logWarning("Could not load cached thread.").pipe(
         Effect.annotateLogs({
@@ -252,20 +261,43 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     readonly epoch: number;
   } | null>(null);
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
+  const privacyPersistenceLock = yield* Semaphore.make(1);
+  const unregisterPrivatePurger = registerOwnerPrivatePurger(
+    environmentId,
+    privacyPersistenceLock.withPermits(1)(
+      applyLock.withPermits(1)(
+        Effect.gen(function* () {
+          yield* Ref.update(historyEpoch, (epoch) => epoch + 1);
+          yield* Ref.set(pendingOlderPage, null);
+          yield* SubscriptionRef.set(lastSequence, 0);
+          yield* Queue.takeAll(persistence);
+          yield* SubscriptionRef.set(state, EMPTY_ENVIRONMENT_THREAD_STATE);
+          yield* cache.removeThread(environmentId, threadId);
+        }),
+      ),
+    ),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(unregisterPrivatePurger));
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
-    yield* cache.saveThread(environmentId, snapshot).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Could not persist the thread cache.").pipe(
-          Effect.annotateLogs({
-            environmentId,
-            threadId,
-            error: error.message,
-          }),
-        ),
-      ),
+    if (isOwnerPrivateVolatile(environmentId, threadId)) return;
+    yield* privacyPersistenceLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (isOwnerPrivateVolatile(environmentId, threadId)) return;
+        yield* cache.saveThread(environmentId, snapshot).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not persist the thread cache.").pipe(
+              Effect.annotateLogs({
+                environmentId,
+                threadId,
+                error: error.message,
+              }),
+            ),
+          ),
+        );
+      }),
     );
   });
 
@@ -324,6 +356,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     // recent turns); a snapshot or merged page passes its own page state.
     page: Option.Option<EnvironmentThreadPageState> | "keep",
   ) {
+    if (isOwnerPrivateConcealed(environmentId, threadId)) return;
     const waiting = yield* Ref.get(awaitingCompletion);
     yield* SubscriptionRef.update(state, (current) => ({
       data: Option.some(thread),
@@ -383,6 +416,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyItemLocked = Effect.fn("EnvironmentThreadState.applyItemLocked")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
+    if (isOwnerPrivateConcealed(environmentId, threadId)) return;
     if (item.kind === "synchronized") {
       yield* Ref.set(awaitingCompletion, false);
       yield* SubscriptionRef.update(state, (current) =>
@@ -473,6 +507,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
     item: OrchestrationThreadStreamItem,
   ) {
+    if (isOwnerPrivateConcealed(environmentId, threadId)) return;
     yield* applyLock.withPermits(1)(applyItemLocked(item));
   });
 
@@ -482,6 +517,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const mergeOlderPage = Effect.fn("EnvironmentThreadState.mergeOlderPage")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
+    if (isOwnerPrivateConcealed(environmentId, threadId)) return;
     // The merge is built inside the update callback so it composes with
     // whatever thread value is current at commit time. The applyLock already
     // serializes this against event application; the atomic build is defense
